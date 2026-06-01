@@ -1,0 +1,15 @@
+services:
+  # age-decrypt: decrypts age-encrypted *.env files in a mounted tree.
+  # Run as a one-shot (it exits after decrypting); `health` is also available.
+  age:
+    image: ghcr.io/cplieger/docker-age:latest
+    container_name: age
+    command: ["decrypt"]
+
+    environment:
+      AGE_KEY_FILE: "/age/keys.txt"
+      AGE_REPO_ROOT: "/repo"
+
+    volumes:
+      - ./age-keys:/age:ro # directory containing the age identity (keys.txt)
+      - ./repo:/repo # tree containing the *.env(.age) files to decrypt
