@@ -159,7 +159,7 @@ func TestDecryptFile_tmp_name_encodes_pid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRoot: %v", err)
 	}
-	defer rootDir.Close()
+	defer func() { _ = rootDir.Close() }()
 
 	if got := decryptFile(context.Background(), rootDir, "pinned.env", identity); got != fileDecrypted {
 		t.Fatalf("decryptFile = %d, want %d (fileDecrypted)", got, fileDecrypted)
