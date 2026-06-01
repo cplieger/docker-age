@@ -21,7 +21,7 @@ func loadIdentity(path string) (age.Identity, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open key file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Key files are tiny (a few hundred bytes). Reject anything over 1 MB
 	// to prevent OOM if a large file is mounted by mistake.

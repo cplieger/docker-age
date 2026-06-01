@@ -164,7 +164,7 @@ func decryptAll(ctx context.Context, root string, identity age.Identity) (decryp
 	if err != nil {
 		return decryptResult{}, fmt.Errorf("open root: %w", err)
 	}
-	defer rootDir.Close()
+	defer func() { _ = rootDir.Close() }()
 
 	const staleThreshold = 10 * time.Minute
 	var result decryptResult
