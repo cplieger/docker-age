@@ -703,7 +703,7 @@ func TestDecryptFile_write_error_on_readonly_directory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRoot: %v", err)
 	}
-	defer rootDir.Close()
+	defer func() { _ = rootDir.Close() }()
 
 	got := decryptFileBool(rootDir, "readonly.env", identity)
 	if got {
@@ -734,7 +734,7 @@ func TestDecryptFile_overwrites_file_in_place(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRoot: %v", err)
 	}
-	defer rootDir.Close()
+	defer func() { _ = rootDir.Close() }()
 
 	got := decryptFileBool(rootDir, "overwrite.env", identity)
 	if !got {
@@ -1129,7 +1129,7 @@ func TestProperty_DecryptFile_plaintext_is_noop(t *testing.T) {
 		if openErr != nil {
 			rt.Fatalf("OpenRoot: %v", openErr)
 		}
-		defer rootDir.Close()
+		defer func() { _ = rootDir.Close() }()
 
 		got := decryptFileBool(rootDir, "plain.env", identity)
 		if got {
@@ -1239,7 +1239,7 @@ func TestDecryptFile_status(t *testing.T) {
 			if err != nil {
 				t.Fatalf("OpenRoot: %v", err)
 			}
-			defer rootDir.Close()
+			defer func() { _ = rootDir.Close() }()
 
 			got := decryptFile(context.Background(), rootDir, tc.file, tc.id)
 			if got != tc.want {
@@ -1275,7 +1275,7 @@ func FuzzDecryptFile(f *testing.F) {
 		if err != nil {
 			t.Fatalf("OpenRoot: %v", err)
 		}
-		defer rootDir.Close()
+		defer func() { _ = rootDir.Close() }()
 
 		// Must not panic regardless of input.
 		_ = decryptFile(context.Background(), rootDir, "fuzz.env", id)
@@ -1303,7 +1303,7 @@ func BenchmarkDecryptFile(b *testing.B) {
 	if err != nil {
 		b.Fatalf("OpenRoot: %v", err)
 	}
-	defer rootDir.Close()
+	defer func() { _ = rootDir.Close() }()
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -1403,7 +1403,7 @@ func TestDecryptFile_at_exact_encrypted_size_limit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRoot: %v", err)
 	}
-	defer rootDir.Close()
+	defer func() { _ = rootDir.Close() }()
 
 	got := decryptFileBool(rootDir, "small.env", identity)
 	if !got {
@@ -1440,7 +1440,7 @@ func TestDecryptFile_decrypted_content_at_exact_1MB_limit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRoot: %v", err)
 	}
-	defer rootDir.Close()
+	defer func() { _ = rootDir.Close() }()
 
 	got := decryptFileBool(rootDir, "exact-1mb.env", identity)
 	if !got {
@@ -1475,7 +1475,7 @@ func TestDecryptFile_decrypted_content_over_1MB_limit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRoot: %v", err)
 	}
-	defer rootDir.Close()
+	defer func() { _ = rootDir.Close() }()
 
 	got := decryptFileBool(rootDir, "over-1mb.env", identity)
 	if got {
@@ -1549,7 +1549,7 @@ func TestDecryptFile_read_error_after_stat_success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRoot: %v", err)
 	}
-	defer rootDir.Close()
+	defer func() { _ = rootDir.Close() }()
 
 	got := decryptFileBool(rootDir, "unreadable.env", identity)
 	if got {
