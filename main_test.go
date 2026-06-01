@@ -353,8 +353,8 @@ func TestDecryptAllEmptyDirectory(t *testing.T) {
 func TestDecryptAllIgnoresNonEnvFiles(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
-	os.WriteFile(filepath.Join(tmpDir, "config.txt"), []byte("data"), 0o644)
-	os.WriteFile(filepath.Join(tmpDir, "settings.yaml"), []byte("data"), 0o644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "config.txt"), []byte("data"), 0o644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "settings.yaml"), []byte("data"), 0o644)
 
 	count, err := decryptAllCount(tmpDir, identity)
 	if err != nil || count != 0 {
@@ -378,7 +378,7 @@ func TestDecryptAllSymlinkOutsideRoot(t *testing.T) {
 		t.Fatalf("encrypt: %v", err)
 	}
 	outsideEnv := filepath.Join(outsideDir, "stolen.env")
-	os.WriteFile(outsideEnv, encrypted, 0o644)
+	_ = os.WriteFile(outsideEnv, encrypted, 0o644)
 
 	// Create a symlink inside the repo pointing outside
 	symlink := filepath.Join(repoDir, "escape.env")
@@ -414,9 +414,9 @@ func TestDecryptAllEnvSuffixEdgeCases(t *testing.T) {
 	writeEncryptedEnv(t, tmpDir, ".env", original, identity.Recipient())
 
 	// Files that don't end in .env should be skipped
-	os.WriteFile(filepath.Join(tmpDir, ".env.bak"), []byte("age-encryption.org/v1\nfake"), 0o644)
-	os.WriteFile(filepath.Join(tmpDir, "env"), []byte("age-encryption.org/v1\nfake"), 0o644)
-	os.WriteFile(filepath.Join(tmpDir, ".environment"), []byte("age-encryption.org/v1\nfake"), 0o644)
+	_ = os.WriteFile(filepath.Join(tmpDir, ".env.bak"), []byte("age-encryption.org/v1\nfake"), 0o644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "env"), []byte("age-encryption.org/v1\nfake"), 0o644)
+	_ = os.WriteFile(filepath.Join(tmpDir, ".environment"), []byte("age-encryption.org/v1\nfake"), 0o644)
 
 	count, err := decryptAllCount(tmpDir, identity)
 	if err != nil {
@@ -460,7 +460,7 @@ func TestLoadIdentityValid(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 	keyPath := filepath.Join(tmpDir, "key.txt")
-	os.WriteFile(keyPath, []byte(identity.String()+"\n"), 0o600)
+	_ = os.WriteFile(keyPath, []byte(identity.String()+"\n"), 0o600)
 
 	loaded, err := loadIdentity(keyPath)
 	if err != nil {
@@ -486,14 +486,14 @@ func TestLoadIdentityErrors(t *testing.T) {
 	})
 	t.Run("empty file", func(t *testing.T) {
 		p := filepath.Join(tmpDir, "empty.txt")
-		os.WriteFile(p, []byte{}, 0o644)
+		_ = os.WriteFile(p, []byte{}, 0o644)
 		if _, err := loadIdentity(p); err == nil {
 			t.Error("expected error")
 		}
 	})
 	t.Run("invalid content", func(t *testing.T) {
 		p := filepath.Join(tmpDir, "garbage.txt")
-		os.WriteFile(p, []byte("not a valid age key"), 0o644)
+		_ = os.WriteFile(p, []byte("not a valid age key"), 0o644)
 		if _, err := loadIdentity(p); err == nil {
 			t.Error("expected error")
 		}
@@ -501,7 +501,7 @@ func TestLoadIdentityErrors(t *testing.T) {
 	t.Run("oversized file", func(t *testing.T) {
 		p := filepath.Join(tmpDir, "huge.txt")
 		// Write just over 1 MB to trigger the size guard
-		os.WriteFile(p, bytes.Repeat([]byte("x"), 1<<20+1), 0o644)
+		_ = os.WriteFile(p, bytes.Repeat([]byte("x"), 1<<20+1), 0o644)
 		_, err := loadIdentity(p)
 		if err == nil {
 			t.Error("expected error for oversized key file")
@@ -591,7 +591,7 @@ func TestDecryptFile_skips_plaintext_env_file(t *testing.T) {
 
 	// Write a plaintext .env file (no age header)
 	envPath := filepath.Join(tmpDir, "plain.env")
-	os.WriteFile(envPath, []byte("PLAIN_KEY=plain_value\n"), 0o644)
+	_ = os.WriteFile(envPath, []byte("PLAIN_KEY=plain_value\n"), 0o644)
 
 	rootDir, err := os.OpenRoot(tmpDir)
 	if err != nil {
@@ -624,7 +624,7 @@ func TestDecryptFile_decrypts_binary_format(t *testing.T) {
 		t.Fatalf("encrypt: %v", err)
 	}
 	envPath := filepath.Join(tmpDir, "binary.env")
-	os.WriteFile(envPath, encrypted, 0o644)
+	_ = os.WriteFile(envPath, encrypted, 0o644)
 
 	rootDir, err := os.OpenRoot(tmpDir)
 	if err != nil {
@@ -656,7 +656,7 @@ func TestDecryptFile_decrypts_armored_format(t *testing.T) {
 		t.Fatalf("encrypt: %v", err)
 	}
 	envPath := filepath.Join(tmpDir, "armored.env")
-	os.WriteFile(envPath, encrypted, 0o644)
+	_ = os.WriteFile(envPath, encrypted, 0o644)
 
 	rootDir, err := os.OpenRoot(tmpDir)
 	if err != nil {
@@ -805,7 +805,7 @@ func TestDecryptAll_handles_walk_error(t *testing.T) {
 	// Create a subdirectory with no read permission to trigger walkErr
 	noReadDir := filepath.Join(tmpDir, "noaccess")
 	_ = os.MkdirAll(noReadDir, 0o755)
-	os.WriteFile(filepath.Join(noReadDir, "secret.env"), []byte("data"), 0o644)
+	_ = os.WriteFile(filepath.Join(noReadDir, "secret.env"), []byte("data"), 0o644)
 	_ = os.Chmod(noReadDir, 0o000)
 	defer func() { _ = os.Chmod(noReadDir, 0o755) }() // restore for cleanup
 
@@ -898,7 +898,7 @@ func TestDecryptAll_counts_failed_files(t *testing.T) {
 	writeEncryptedEnv(t, tmpDir, "wrong-key.env", []byte("SECRET=val\n"), encryptID.Recipient())
 
 	// One plaintext .env — should be skipped (not counted as failed).
-	os.WriteFile(filepath.Join(tmpDir, "plain.env"), []byte("PLAIN=val\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "plain.env"), []byte("PLAIN=val\n"), 0o644)
 
 	result, err := decryptAll(context.Background(), tmpDir, decryptID)
 	if err != nil {
@@ -922,11 +922,11 @@ func TestDecryptAll_sweeps_orphan_tmp_files(t *testing.T) {
 	// avoid ripping the tmp out from under a concurrent peer.
 	orphan1 := filepath.Join(tmpDir, "app.env.tmp") // legacy name
 	orphan2 := filepath.Join(tmpDir, "sub")
-	os.MkdirAll(orphan2, 0o755)
+	_ = os.MkdirAll(orphan2, 0o755)
 	orphan2File := filepath.Join(orphan2, "db.env.tmp.99999") // per-PID name
 
-	os.WriteFile(orphan1, []byte("LEAKED_SECRET=bad\n"), 0o600)
-	os.WriteFile(orphan2File, []byte("LEAKED_DB=bad\n"), 0o600)
+	_ = os.WriteFile(orphan1, []byte("LEAKED_SECRET=bad\n"), 0o600)
+	_ = os.WriteFile(orphan2File, []byte("LEAKED_DB=bad\n"), 0o600)
 
 	oldTime := time.Now().Add(-1 * time.Hour)
 	if err := os.Chtimes(orphan1, oldTime, oldTime); err != nil {
@@ -1003,7 +1003,7 @@ func TestLoadIdentity_key_at_exact_size_limit(t *testing.T) {
 	// It will fail parsing (it's not a valid key), but the error should be
 	// about parsing, not about size.
 	p := filepath.Join(tmpDir, "exact-1mb.txt")
-	os.WriteFile(p, bytes.Repeat([]byte("x"), 1<<20), 0o644)
+	_ = os.WriteFile(p, bytes.Repeat([]byte("x"), 1<<20), 0o644)
 
 	_, err := loadIdentity(p)
 	if err == nil {
@@ -1022,7 +1022,7 @@ func TestLoadIdentity_key_with_comment_lines(t *testing.T) {
 	content := fmt.Sprintf("# created: 2024-01-01T00:00:00Z\n# public key: %s\n%s\n",
 		identity.Recipient().String(), identity.String())
 	keyPath := filepath.Join(tmpDir, "key-with-comments.txt")
-	os.WriteFile(keyPath, []byte(content), 0o600)
+	_ = os.WriteFile(keyPath, []byte(content), 0o600)
 
 	loaded, err := loadIdentity(keyPath)
 	if err != nil {
@@ -1108,7 +1108,7 @@ func TestProperty_DecryptFile_plaintext_is_noop(t *testing.T) {
 		if err != nil {
 			rt.Fatalf("mkdtemp: %v", err)
 		}
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		// Generate random plaintext .env content that doesn't start with age headers
 		numPairs := rapid.IntRange(1, 5).Draw(rt, "numPairs")
@@ -1340,7 +1340,7 @@ func TestLoadIdentity_multiple_identities_uses_first(t *testing.T) {
 
 	content := id1.String() + "\n" + id2.String() + "\n"
 	keyPath := filepath.Join(tmpDir, "multi.txt")
-	os.WriteFile(keyPath, []byte(content), 0o600)
+	_ = os.WriteFile(keyPath, []byte(content), 0o600)
 
 	loaded, err := loadIdentity(keyPath)
 	if err != nil {
@@ -1361,9 +1361,9 @@ func TestDecryptAll_all_plaintext_env_files(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
-	os.WriteFile(filepath.Join(tmpDir, "app1.env"), []byte("KEY1=val1\n"), 0o644)
-	os.WriteFile(filepath.Join(tmpDir, "app2.env"), []byte("KEY2=val2\n"), 0o644)
-	os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("ROOT_KEY=root\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "app1.env"), []byte("KEY1=val1\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "app2.env"), []byte("KEY2=val2\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("ROOT_KEY=root\n"), 0o644)
 
 	count, err := decryptAllCount(tmpDir, identity)
 	if err != nil {
@@ -1397,7 +1397,7 @@ func TestDecryptFile_at_exact_encrypted_size_limit(t *testing.T) {
 		t.Fatalf("encrypted size %d exceeds 10MB — test assumption broken", len(encrypted))
 	}
 
-	os.WriteFile(filepath.Join(tmpDir, "small.env"), encrypted, 0o644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "small.env"), encrypted, 0o644)
 
 	rootDir, err := os.OpenRoot(tmpDir)
 	if err != nil {
@@ -1434,7 +1434,7 @@ func TestDecryptFile_decrypted_content_at_exact_1MB_limit(t *testing.T) {
 	}
 
 	envPath := filepath.Join(tmpDir, "exact-1mb.env")
-	os.WriteFile(envPath, encrypted, 0o644)
+	_ = os.WriteFile(envPath, encrypted, 0o644)
 
 	rootDir, err := os.OpenRoot(tmpDir)
 	if err != nil {
@@ -1469,7 +1469,7 @@ func TestDecryptFile_decrypted_content_over_1MB_limit(t *testing.T) {
 	}
 
 	envPath := filepath.Join(tmpDir, "over-1mb.env")
-	os.WriteFile(envPath, encrypted, 0o644)
+	_ = os.WriteFile(envPath, encrypted, 0o644)
 
 	rootDir, err := os.OpenRoot(tmpDir)
 	if err != nil {
