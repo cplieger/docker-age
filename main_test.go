@@ -132,7 +132,7 @@ func TestProperty_ArmoredRoundTrip(t *testing.T) {
 		if err != nil {
 			rt.Fatalf("mkdtemp: %v", err)
 		}
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		encrypted, err := encryptArmored(original, identity.Recipient())
 		if err != nil {
@@ -188,7 +188,7 @@ func TestProperty_BinaryRoundTrip(t *testing.T) {
 		if err != nil {
 			rt.Fatalf("mkdtemp: %v", err)
 		}
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		envPath := filepath.Join(tmpDir, "test.env")
 		if err := os.WriteFile(envPath, encrypted, 0o644); err != nil {
@@ -225,7 +225,7 @@ func TestProperty_ResilientWalk(t *testing.T) {
 		if err != nil {
 			rt.Fatalf("mkdtemp: %v", err)
 		}
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		// Create valid encrypted .env files (some in subdirectories)
 		numValid := rapid.IntRange(1, 5).Draw(rt, "numValid")
@@ -243,10 +243,10 @@ func TestProperty_ResilientWalk(t *testing.T) {
 			dir := tmpDir
 			if i%2 == 1 {
 				dir = filepath.Join(tmpDir, fmt.Sprintf("sub%d", i))
-				os.MkdirAll(dir, 0o755)
+				_ = os.MkdirAll(dir, 0o755)
 			}
 			p := filepath.Join(dir, fmt.Sprintf("valid%d.env", i))
-			os.WriteFile(p, encrypted, 0o644)
+			_ = os.WriteFile(p, encrypted, 0o644)
 			validFiles = append(validFiles, validFile{path: p, content: content})
 		}
 
@@ -269,12 +269,12 @@ func TestProperty_ResilientWalk(t *testing.T) {
 			case "binary":
 				data = rapid.SliceOfN(rapid.Byte(), 10, 200).Draw(rt, fmt.Sprintf("garbage_%d", i))
 			}
-			os.WriteFile(p, data, 0o644)
+			_ = os.WriteFile(p, data, 0o644)
 			invalidFiles = append(invalidFiles, invalidFile{path: p, data: data})
 		}
 
 		// Non-.env files should be ignored entirely
-		os.WriteFile(filepath.Join(tmpDir, "readme.txt"), []byte("ignored"), 0o644)
+		_ = os.WriteFile(filepath.Join(tmpDir, "readme.txt"), []byte("ignored"), 0o644)
 
 		count, err := decryptAllCount(tmpDir, identity)
 		if err != nil {
@@ -432,7 +432,7 @@ func TestDecryptAllNestedDirectories(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	sub2 := filepath.Join(tmpDir, "sub1", "sub2")
-	os.MkdirAll(sub2, 0o755)
+	_ = os.MkdirAll(sub2, 0o755)
 
 	original := []byte("NESTED_KEY=nested_value\n")
 	envPath := writeEncryptedEnv(t, sub2, ".env", original, identity.Recipient())
@@ -597,7 +597,7 @@ func TestDecryptFile_skips_plaintext_env_file(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRoot: %v", err)
 	}
-	defer rootDir.Close()
+	defer func() { _ = rootDir.Close() }()
 
 	got := decryptFileBool(rootDir, "plain.env", identity)
 	if got {
@@ -630,7 +630,7 @@ func TestDecryptFile_decrypts_binary_format(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRoot: %v", err)
 	}
-	defer rootDir.Close()
+	defer func() { _ = rootDir.Close() }()
 
 	got := decryptFileBool(rootDir, "binary.env", identity)
 	if !got {
@@ -662,7 +662,7 @@ func TestDecryptFile_decrypts_armored_format(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRoot: %v", err)
 	}
-	defer rootDir.Close()
+	defer func() { _ = rootDir.Close() }()
 
 	got := decryptFileBool(rootDir, "armored.env", identity)
 	if !got {
@@ -804,10 +804,10 @@ func TestDecryptAll_handles_walk_error(t *testing.T) {
 
 	// Create a subdirectory with no read permission to trigger walkErr
 	noReadDir := filepath.Join(tmpDir, "noaccess")
-	os.MkdirAll(noReadDir, 0o755)
+	_ = os.MkdirAll(noReadDir, 0o755)
 	os.WriteFile(filepath.Join(noReadDir, "secret.env"), []byte("data"), 0o644)
-	os.Chmod(noReadDir, 0o000)
-	defer os.Chmod(noReadDir, 0o755) // restore for cleanup
+	_ = os.Chmod(noReadDir, 0o000)
+	defer func() { _ = os.Chmod(noReadDir, 0o755) }() // restore for cleanup
 
 	// decryptAll should not return an error — it logs and continues
 	count, err := decryptAllCount(tmpDir, identity)
