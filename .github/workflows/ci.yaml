@@ -13,6 +13,8 @@ on:
       - "**/*.md"
       - "LICENSE"
       - ".gitignore"
+  schedule:
+    - cron: "0 3 * * 1" # Mondays 03:00 UTC — weekly full CI (incl fuzz)
   workflow_dispatch:
 
 jobs:
