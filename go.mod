@@ -4,6 +4,7 @@ go 1.26.4
 
 require (
 	filippo.io/age v1.3.1
+	github.com/cplieger/health v1.0.0
 	pgregory.net/rapid v1.3.0
 )
 
