@@ -14,13 +14,13 @@ import (
 	"time"
 )
 
-// TestDecryptAll_concurrent_safe reproduces the production race: Komodo's
-// BatchDeployStackIfChanged fans out pre_deploy across N stacks in parallel,
-// so N processes invoke "docker exec age /age-decrypt decrypt" simultaneously.
-// With a shared ".env.tmp" name, one process's sweep deleted another's
-// in-flight tmp, surfacing as:
+// TestDecryptAll_concurrent_safe reproduces a production race: when an
+// orchestrator fans out pre_deploy across N stacks in parallel, N processes
+// invoke "docker exec age /age-decrypt decrypt" simultaneously. With a
+// shared ".env.tmp" name, one process's sweep deleted another's in-flight
+// tmp, surfacing as:
 //
-//	renameat apps/frigate/.env.tmp apps/frigate/.env: no such file or directory
+//	renameat <dir>/.env.tmp <dir>/.env: no such file or directory
 //
 // This test simulates the fan-out in-process (each goroutine plays the role
 // of a separate age-decrypt invocation) and asserts: all runs succeed, every

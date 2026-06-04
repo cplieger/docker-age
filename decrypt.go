@@ -19,7 +19,7 @@ import (
 
 // tmpCounter provides in-process uniqueness on top of the PID: even if two
 // goroutines within the same process call decryptFile on the same rel at the
-// same moment, they get distinct tmp paths. In Komodo's real topology each
+// same moment, they get distinct tmp paths. In typical deployments each
 // age-decrypt invocation is its own OS process with its own PID, so PID
 // alone would be enough — the counter just closes the door on future
 // in-process callers.
@@ -104,11 +104,12 @@ func decryptFile(ctx context.Context, rootDir *os.Root, rel string, identity age
 	}
 
 	// Atomic in-place rewrite: write to a sibling temp file, then rename.
-	// Komodo's BatchDeployStackIfChanged can run pre_deploy for multiple
-	// stacks in parallel. A single shared tmp name (e.g. ".env.tmp") makes
-	// concurrent peers race on the same path: one's rename vs another's
-	// orphan-sweep — we observed this in production as
-	//   renameat apps/frigate/.env.tmp apps/frigate/.env: no such file or directory
+	// When an orchestrator deploys many stacks in parallel, multiple
+	// age-decrypt invocations can run concurrently against the same tree.
+	// A single shared tmp name (e.g. ".env.tmp") makes concurrent peers
+	// race on the same path: one's rename vs another's orphan-sweep —
+	// observed in production as
+	//   renameat <dir>/.env.tmp <dir>/.env: no such file or directory
 	// Using the caller's PID plus a process-local atomic counter in the
 	// tmp name isolates every call so concurrent decrypt passes on the
 	// same tree — across processes or goroutines — cannot collide.
