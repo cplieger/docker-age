@@ -32,9 +32,11 @@ The `age-decrypt` binary is a single static Go executable on `gcr.io/distroless/
 The expected workflow is encryption-at-rest in git, decryption at deploy:
 
 1. Encrypt your `.env` files locally:
+
    ```bash
    age -a -R recipients.txt -o apps/myservice/.env apps/myservice/.env.dec
    ```
+
 2. Commit `apps/myservice/.env` (encrypted, ASCII-armored) to git. `.env.dec` stays local.
 3. On each server, run `age-decrypt` as a pre-deploy step before your stack starts:
 
