@@ -1,4 +1,4 @@
-module age-decrypt
+module github.com/cplieger/age-decrypt
 
 go 1.26.4
 
