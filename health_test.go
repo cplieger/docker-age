@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cplieger/health"
 	"pgregory.net/rapid"
 )
 
@@ -52,14 +53,15 @@ func TestHealthMarker_DegradedMode(t *testing.T) {
 	}
 
 	path := filepath.Join(dir, ".healthy")
-	m := newHealthMarker(path)
 
-	if !m.degraded {
-		// Some environments (root, permissive filesystems like Windows
-		// or containers) allow writes through 0500; skip rather than
-		// fail in those cases.
+	// Some environments (root, permissive filesystems like Windows
+	// or containers) allow writes through 0500; skip rather than
+	// fail in those cases.
+	if health.ProbeDir(path) == nil {
 		t.Skip("test environment bypasses directory mode; skipping")
 	}
+
+	m := newHealthMarker(path)
 
 	m.Set(true)
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -119,12 +121,12 @@ func TestHealthMarker_Property(t *testing.T) {
 	})
 }
 
-// TestProbeHealthDir_Writable confirms the probe succeeds on a normal
+// TestProbeDir_Writable confirms the probe succeeds on a normal
 // writable temp dir and leaves no artifact behind.
-func TestProbeHealthDir_Writable(t *testing.T) {
+func TestProbeDir_Writable(t *testing.T) {
 	dir := t.TempDir()
-	if err := probeHealthDir(filepath.Join(dir, ".healthy")); err != nil {
-		t.Fatalf("probeHealthDir on writable dir: %v", err)
+	if err := health.ProbeDir(filepath.Join(dir, ".healthy")); err != nil {
+		t.Fatalf("health.ProbeDir on writable dir: %v", err)
 	}
 
 	entries, err := os.ReadDir(dir)
@@ -136,10 +138,10 @@ func TestProbeHealthDir_Writable(t *testing.T) {
 	}
 }
 
-// TestProbeHealthDir_NonExistent confirms a missing parent directory is
+// TestProbeDir_NonExistent confirms a missing parent directory is
 // reported as an error rather than masked.
-func TestProbeHealthDir_NonExistent(t *testing.T) {
-	err := probeHealthDir(filepath.Join(t.TempDir(), "nope", ".healthy"))
+func TestProbeDir_NonExistent(t *testing.T) {
+	err := health.ProbeDir(filepath.Join(t.TempDir(), "nope", ".healthy"))
 	if err == nil {
 		t.Fatal("expected error for non-existent parent dir")
 	}
@@ -178,7 +180,7 @@ func TestProbeCheck_degraded_when_marker_absent_and_dir_not_writable(t *testing.
 	path := filepath.Join(dir, ".healthy")
 
 	// If the OS ignores directory mode (root, Windows), skip.
-	if probeHealthDir(path) == nil {
+	if health.ProbeDir(path) == nil {
 		t.Skip("test environment bypasses directory mode; skipping")
 	}
 
