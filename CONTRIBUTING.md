@@ -18,7 +18,7 @@ the canonical identifier.
 Flat `package main`, one concern per file:
 
 - `main.go` — entry point and the two run modes (`runSubcommand`,
-  `runServer`). The `health` probe is intercepted here *before*
+  `runServer`). The `health` probe is intercepted here _before_
   `parseConfig` runs, because the probe must work without `AGE_KEY_FILE`
   set.
 - `config.go` — env-var parsing (`AGE_KEY_FILE`, `AGE_REPO_ROOT`) and mode
