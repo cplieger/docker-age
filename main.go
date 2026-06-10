@@ -9,12 +9,13 @@ import (
 	"syscall"
 
 	"filippo.io/age"
+	"github.com/cplieger/health"
 )
 
 func main() {
 	// CLI health probe for Docker healthcheck (distroless has no curl/wget).
 	if len(os.Args) > 1 && os.Args[1] == modeHealth {
-		runProbe(healthMarkerPath)
+		health.RunProbe(health.DefaultPath)
 	}
 
 	cfg, err := parseConfig()
@@ -62,7 +63,7 @@ func runServer(repoRoot string, identity age.Identity) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	marker := newHealthMarker(healthMarkerPath)
+	marker := health.NewMarker(health.DefaultPath)
 	marker.Set(false)
 
 	result, err := decryptAll(ctx, repoRoot, identity)
