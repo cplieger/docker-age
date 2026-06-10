@@ -29,6 +29,8 @@ The `age-decrypt` binary is a single static Go executable on `gcr.io/distroless/
 
 ## Quick start
 
+Available from both `ghcr.io/cplieger/docker-age` and `docker.io/cplieger/docker-age` — identical images and tags.
+
 The expected workflow is encryption-at-rest in git, decryption at deploy:
 
 1. Encrypt your `.env` files locally:
