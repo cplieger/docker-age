@@ -133,12 +133,6 @@ The image is published with [cosign](https://github.com/sigstore/cosign) signatu
 
 The Go binary is built with `-trimpath` (strip absolute paths) and `-ldflags="-s -w"` (strip symbol tables and DWARF). All file I/O goes through `os.OpenRoot` to prevent symlink traversal out of the mounted tree.
 
-## Code quality
-
-- Comprehensive test suite: unit tests, property-based tests, fuzz tests, and benchmarks
-- Concurrency tests reproduce the in-process race seen with parallel orchestrator deploys (e.g. multiple stacks calling `docker exec age /age-decrypt decrypt` simultaneously) — the test verifies that PID-keyed tmp names + age-bound orphan sweep prevent collisions
-- Health probe tests verify the marker lifecycle (write on success, remove on failure)
-
 ## Dependencies
 
 All dependencies are updated automatically via [Renovate](https://github.com/renovatebot/renovate) and pinned by digest or version for reproducibility.
