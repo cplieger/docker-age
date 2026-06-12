@@ -13,7 +13,7 @@ Decrypt [age](https://github.com/FiloSottile/age)-encrypted `.env` files at depl
 
 Walks a mounted directory tree, finds every `.env` file that's age-encrypted (binary or armored), and rewrites it in place with its decrypted plaintext. Files that aren't age-encrypted are left untouched. Designed to run as a `pre_deploy` step before `docker compose up` reads the `.env` files.
 
-The `age-decrypt` binary is a single static Go executable on `gcr.io/distroless/static-debian13:nonroot`. It supports two subcommands:
+The `age-decrypt` binary is a single static Go executable on `gcr.io/distroless/static:nonroot`. It supports two subcommands:
 
 - `decrypt` — walk the tree, decrypt every age-encrypted `.env`, exit 0 on success
 - `health` — file-based health probe (writes `/tmp/.healthy` on successful decrypt; reads it back to report status)
@@ -138,11 +138,11 @@ The Go binary is built with `-trimpath` (strip absolute paths) and `-ldflags="-s
 
 All dependencies are updated automatically via [Renovate](https://github.com/renovatebot/renovate) and pinned by digest or version for reproducibility.
 
-| Dependency | Version | Source |
-|------------|---------|--------|
-| golang (builder) | `1.26-alpine` | [Docker Hub](https://hub.docker.com/_/golang) |
-| distroless/static-debian13 | `nonroot` | [GoogleContainerTools](https://github.com/GoogleContainerTools/distroless) |
-| filippo.io/age | latest | [GitHub](https://github.com/FiloSottile/age) |
+| Dependency | Source |
+|------------|--------|
+| golang (builder) | [Docker Hub](https://hub.docker.com/_/golang) |
+| distroless/static | [GoogleContainerTools](https://github.com/GoogleContainerTools/distroless) |
+| filippo.io/age | [GitHub](https://github.com/FiloSottile/age) |
 
 ## Credits
 

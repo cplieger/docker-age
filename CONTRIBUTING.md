@@ -7,7 +7,7 @@ fallback applies; this file covers what's particular to the code here.
 ## What this is
 
 A single static Go binary (`age-decrypt`) shipped on
-`gcr.io/distroless/static-debian13:nonroot`. It walks a mounted tree,
+`gcr.io/distroless/static:nonroot`. It walks a mounted tree,
 decrypts every age-encrypted `.env` in place, and skips everything else.
 The module path is `github.com/cplieger/age-decrypt` even though the repo
 and image are named `docker-age` — the binary name, not the repo name, is
