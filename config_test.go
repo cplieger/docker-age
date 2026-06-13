@@ -10,13 +10,13 @@ import (
 func TestParseConfig(t *testing.T) {
 	tests := []struct {
 		name         string
-		args         []string
 		keyFile      string
 		repoRoot     string
-		wantErr      bool
 		wantMode     string
 		wantKeyFile  string
 		wantRepoRoot string
+		args         []string
+		wantErr      bool
 	}{
 		{
 			name:         "decrypt subcommand with default repo root",
