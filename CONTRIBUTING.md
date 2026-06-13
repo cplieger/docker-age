@@ -48,18 +48,27 @@ before touching `decrypt.go`.
   orphan sweep. Keep the per-call uniqueness.
 - **`decryptFile` is tri-state, and skips are not failures.** It returns
   `fileSkipped` (not age-formatted — legitimate, logged at debug),
-  `fileDecrypted`, or `fileFailed`. The process exits non-zero when
+  `fileDecrypted`, or `fileFailed`. In **subcommand mode** (`runSubcommand`,
+  the `decrypt` argument) the process exits non-zero when
   `result.Failed > 0` **or** when the repo root itself is unreadable: a
   root-level `WalkDir` error (e.g. a stale mount, `readdirent /repo: no such
   file or directory`) is fatal, so a stale `/repo` fails loudly instead of
   reporting a clean `decrypted=0` / exit 0. Per-subdirectory walk errors stay
   non-fatal (logged, the walk continues). A tree of plaintext `.env` files —
   or a legitimately empty tree — is still a clean run.
-- **Server mode gates the health marker on the decrypt outcome.** `runServer`
-  calls `marker.Set(result.Failed == 0)` — a startup decrypt with any failed
-  file leaves the container unhealthy, matching `runSubcommand`'s non-zero exit
-  and the documented marker contract. Don't revert it to an unconditional
-  `Set(true)`.
+- **Server mode never exits on a startup decrypt failure.** `runServer`
+  performs a startup decrypt and sets the health marker via
+  `startupHealthy(result, err)` (`err == nil && result.Failed == 0`): a hard
+  error (unreadable repo root) *and* any per-file failure both mark the
+  container **unhealthy but keep it running**. The container's role is to be a
+  long-lived `docker exec age /age-decrypt decrypt` target for the deploy;
+  exiting on startup would crash-loop it under `restart: unless-stopped` and
+  remove the exec target precisely when a deploy needs it (the failure is
+  usually a transient deploy-time mount race a later exec or a restart
+  recovers from). The loud, deploy-blocking signal lives in subcommand mode
+  (non-zero exit); server mode surfaces failures through the health marker.
+  Don't make `runServer` return non-zero on a startup decrypt failure, and
+  don't revert the marker to an unconditional `Set(true)`.
 - **Decryption is idempotent.** Format is detected by the first bytes
   (armored `-----BEGIN AGE ENCRYPTED FILE-----` vs binary
   `age-encryption.org/v1`); a previously-decrypted file is plaintext and

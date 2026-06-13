@@ -938,6 +938,64 @@ func TestRunSubcommand_returns_one_on_invalid_root(t *testing.T) {
 	}
 }
 
+// --- Unit tests: runServer / startupHealthy ---
+
+func TestStartupHealthy(t *testing.T) {
+	tests := []struct {
+		name   string
+		result decryptResult
+		err    error
+		want   bool
+	}{
+		{"clean run is healthy", decryptResult{Decrypted: 3, Failed: 0}, nil, true},
+		{"empty clean run is healthy", decryptResult{}, nil, true},
+		{"per-file failure is unhealthy", decryptResult{Decrypted: 2, Failed: 1}, nil, false},
+		{"hard error is unhealthy", decryptResult{}, errors.New("open root: stale mount"), false},
+		{"hard error with partial counts is unhealthy", decryptResult{Decrypted: 1, Failed: 0}, errors.New("walk root"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := startupHealthy(tt.result, tt.err); got != tt.want {
+				t.Errorf("startupHealthy(%+v, %v) = %v, want %v", tt.result, tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// A startup decrypt failure (e.g. a stale or not-yet-cloned repo mount) must
+// NOT exit the server: the container has to stay alive as a `docker exec`
+// target for the deploy. Regression guard — server mode previously returned 1
+// here, crash-looping the container under restart: unless-stopped.
+func TestRunServer_stays_alive_on_startup_error(t *testing.T) {
+	identity := newIdentity(t)
+	bogusRoot := filepath.Join(t.TempDir(), "does-not-exist")
+	markerPath := filepath.Join(t.TempDir(), ".healthy")
+
+	// Pre-cancelled context so the post-decrypt wait returns immediately.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	code := runServer(ctx, bogusRoot, markerPath, identity)
+	if code != 0 {
+		t.Errorf("runServer(startup error) = %d, want 0 (must stay alive, not crash-loop)", code)
+	}
+}
+
+func TestRunServer_returns_zero_on_clean_shutdown(t *testing.T) {
+	identity := newIdentity(t)
+	repoDir := t.TempDir()
+	writeEncryptedEnv(t, repoDir, "app.env", []byte("K=v\n"), identity.Recipient())
+	markerPath := filepath.Join(t.TempDir(), ".healthy")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	code := runServer(ctx, repoDir, markerPath, identity)
+	if code != 0 {
+		t.Errorf("runServer(clean shutdown) = %d, want 0", code)
+	}
+}
+
 // --- Unit tests: loadIdentity edge cases ---
 
 func TestLoadIdentity_key_at_exact_size_limit(t *testing.T) {
