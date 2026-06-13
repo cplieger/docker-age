@@ -134,25 +134,42 @@ func decryptFile(ctx context.Context, rootDir *os.Root, rel string, identity age
 // sweepOrphanTmpFile removes a single orphaned `.env.tmp` or `.env.tmp.<pid>`
 // file if it is older than staleThreshold. Young temp files are preserved to
 // avoid ripping the tmp out from under a concurrent peer that is mid-decrypt.
-func sweepOrphanTmpFile(rootDir *os.Root, rel string, staleThreshold time.Duration) {
+func sweepOrphanTmpFile(rootDir *os.Root, rel string, staleThreshold time.Duration) bool {
 	cutoff := time.Now().Add(-staleThreshold)
 	info, statErr := rootDir.Stat(rel)
 	if statErr != nil {
-		return
+		return false
 	}
 	if info.ModTime().After(cutoff) {
-		return
+		return false
 	}
 	if rmErr := rootDir.Remove(rel); rmErr != nil {
 		slog.Warn("orphan tmp cleanup failed", "file", rel, "error", rmErr)
-		return
+		return false
 	}
 	slog.Info("removed orphan tmp file", "file", rel)
+	return true
 }
 
 // isOrphanTmpFile reports whether the file name matches the orphan tmp pattern.
 func isOrphanTmpFile(name string) bool {
-	return strings.HasSuffix(name, ".env.tmp") || strings.Contains(name, ".env.tmp.")
+	if strings.HasSuffix(name, ".env.tmp") {
+		return true
+	}
+	idx := strings.LastIndex(name, ".env.tmp.")
+	if idx < 0 {
+		return false
+	}
+	suffix := name[idx+len(".env.tmp."):]
+	if suffix == "" {
+		return false
+	}
+	for _, r := range suffix {
+		if (r < '0' || r > '9') && r != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 // decryptAll walks root for .env files, decrypting any age-encrypted ones
@@ -171,11 +188,17 @@ func decryptAll(ctx context.Context, root string, identity age.Identity) (decryp
 	var result decryptResult
 	var orphansRemoved int
 
+	var rootWalkErr error
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if ctx.Err() != nil {
 			return filepath.SkipAll
 		}
 		if walkErr != nil {
+			if path == root {
+				slog.Error("repo root unreadable", "root", root, "error", walkErr)
+				rootWalkErr = fmt.Errorf("walk root %s: %w", root, walkErr)
+				return filepath.SkipAll
+			}
 			slog.Warn("walk error", "path", path, "error", walkErr)
 			return nil
 		}
@@ -191,13 +214,14 @@ func decryptAll(ctx context.Context, root string, identity age.Identity) (decryp
 			if relErr != nil {
 				return nil
 			}
-			sweepOrphanTmpFile(rootDir, rel, staleThreshold)
-			orphansRemoved++
+			if sweepOrphanTmpFile(rootDir, rel, staleThreshold) {
+				orphansRemoved++
+			}
 			return nil
 		}
 
 		// Process .env files for decryption.
-		if !strings.HasSuffix(path, ".env") {
+		if !strings.HasSuffix(name, ".env") {
 			return nil
 		}
 		rel, relErr := filepath.Rel(root, path)
@@ -213,6 +237,9 @@ func decryptAll(ctx context.Context, root string, identity age.Identity) (decryp
 		return nil
 	})
 
+	if rootWalkErr != nil {
+		return result, rootWalkErr
+	}
 	slog.Debug("orphan tmp sweep complete", "removed", orphansRemoved)
 	return result, nil
 }

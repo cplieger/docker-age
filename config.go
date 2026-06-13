@@ -12,14 +12,19 @@ type config struct {
 	Mode     string
 }
 
-const modeHealth = "health"
+const (
+	modeHealth     = "health"
+	modeServer     = "server"
+	modeSubcommand = "subcommand"
+	subcmdDecrypt  = "decrypt"
+)
 
 func parseConfig() (config, error) {
-	mode := "server"
+	mode := modeServer
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "decrypt":
-			mode = "subcommand"
+		case subcmdDecrypt:
+			mode = modeSubcommand
 		case modeHealth:
 			// handled separately before parseConfig is called
 			mode = modeHealth

@@ -187,3 +187,36 @@ func TestDecryptFile_tmp_name_encodes_pid(t *testing.T) {
 		t.Errorf("pinned.env content = %q, want %q", got, original)
 	}
 }
+
+// TestIsOrphanTmpFile pins the boundaries of the orphan-tmp name
+// matcher directly. Indirect coverage via the sweep tests only ever
+// feeds valid orphan names, leaving the rejection branches (empty
+// suffix, non-digit suffix) uncovered.
+func TestIsOrphanTmpFile(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "legacy bare suffix", input: ".env.tmp", want: true},
+		{name: "legacy prefixed suffix", input: "app.env.tmp", want: true},
+		{name: "per-pid single counter", input: "app.env.tmp.12345", want: true},
+		{name: "per-pid pid dot counter", input: "app.env.tmp.12345.7", want: true},
+		{name: "bare dotenv with pid", input: ".env.tmp.99999", want: true},
+		{name: "plain env file not orphan", input: "app.env", want: false},
+		{name: "decrypted dotenv not orphan", input: ".env", want: false},
+		{name: "non env file", input: "config.txt", want: false},
+		{name: "empty suffix after dot", input: "app.env.tmp.", want: false},
+		{name: "non-digit suffix", input: "app.env.tmp.abc", want: false},
+		{name: "mixed digit and letter suffix", input: "app.env.tmp.12a", want: false},
+		{name: "envtmp without dot separator", input: ".env.tmpfoo", want: false},
+		{name: "envtmp missing leading dot", input: "envtmp", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isOrphanTmpFile(tc.input); got != tc.want {
+				t.Errorf("isOrphanTmpFile(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}

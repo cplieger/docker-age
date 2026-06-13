@@ -24,17 +24,18 @@ func main() {
 		os.Exit(2)
 	}
 
+	// Tag every log line with the invocation mode.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)).With("mode", cfg.Mode))
+
 	identity, err := loadIdentity(cfg.KeyFile)
 	if err != nil {
 		slog.Error("failed to load identity", "error", err)
 		os.Exit(1)
 	}
 
-	// Tag every log line with the invocation mode.
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)).With("mode", cfg.Mode))
 	slog.Info("configuration loaded", "repo_root", cfg.RepoRoot)
 
-	if cfg.Mode == "subcommand" {
+	if cfg.Mode == modeSubcommand {
 		os.Exit(runSubcommand(cfg.RepoRoot, identity))
 	}
 	os.Exit(runServer(cfg.RepoRoot, identity))
@@ -49,11 +50,13 @@ func runSubcommand(repoRoot string, identity age.Identity) int {
 		slog.Error("decryption failed", "error", err)
 		return 1
 	}
-	slog.Info("decryption complete",
-		"decrypted", result.Decrypted, "failed", result.Failed)
 	if result.Failed > 0 {
+		slog.Warn("decryption complete with failures",
+			"decrypted", result.Decrypted, "failed", result.Failed)
 		return 1
 	}
+	slog.Info("decryption complete",
+		"decrypted", result.Decrypted, "failed", result.Failed)
 	return 0
 }
 
@@ -64,6 +67,7 @@ func runServer(repoRoot string, identity age.Identity) int {
 	defer stop()
 
 	marker := health.NewMarker(health.DefaultPath)
+	defer marker.Cleanup()
 	marker.Set(false)
 
 	result, err := decryptAll(ctx, repoRoot, identity)
@@ -71,11 +75,15 @@ func runServer(repoRoot string, identity age.Identity) int {
 		slog.Error("startup decryption failed", "error", err)
 		return 1
 	}
-	slog.Info("startup decryption complete",
-		"decrypted", result.Decrypted, "failed", result.Failed)
-
-	marker.Set(true)
-	defer marker.Cleanup()
+	if result.Failed > 0 {
+		slog.Warn("startup decryption complete with failures; marking unhealthy",
+			"decrypted", result.Decrypted, "failed", result.Failed)
+		marker.Set(false)
+	} else {
+		slog.Info("startup decryption complete",
+			"decrypted", result.Decrypted, "failed", result.Failed)
+		marker.Set(true)
+	}
 
 	slog.Info("ready, waiting for signals")
 	<-ctx.Done()
