@@ -53,11 +53,11 @@ services:
 
     environment:
       AGE_KEY_FILE: "/age/keys.txt"
-      AGE_REPO_ROOT: "/repo"
+      AGE_REPO_ROOT: "/repo/myrepo"  # point at the child; mount the stable parent
 
     volumes:
       - ./age-keys:/age:ro          # directory with the age identity (keys.txt, mode 0600)
-      - ./repo:/repo                 # tree containing the *.env files to decrypt
+      - ./repos:/repo                # bind-mount the STABLE PARENT, not the repo dir (survives re-clone)
 ```
 
 Or as a one-shot before deploy:
@@ -77,7 +77,7 @@ docker run --rm \
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `AGE_KEY_FILE` | Absolute path to the age identity file (one identity per line) | `/age/keys.txt` |
+| `AGE_KEY_FILE` | Absolute path to the age identity file (one identity per line) | _required_ (example: `/age/keys.txt`) |
 | `AGE_REPO_ROOT` | Absolute path to the tree to walk for `.env` files | `/repo` |
 
 ### Volumes

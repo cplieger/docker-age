@@ -1,15 +1,16 @@
 services:
-  # age-decrypt: decrypts age-encrypted *.env files in a mounted tree.
-  # Run as a one-shot (it exits after decrypting); `health` is also available.
+  # age-decrypt: decrypts age-encrypted *.env files in a mounted tree, in place.
+  # Runs once and exits (the `decrypt` subcommand); `health` is also available.
   age:
     image: ghcr.io/cplieger/docker-age:latest
     container_name: age
     command: ["decrypt"]
+    user: "0:0"  # must write decrypted .env files across the host-owned repo tree
 
     environment:
       AGE_KEY_FILE: "/age/keys.txt"
-      AGE_REPO_ROOT: "/repo"
+      AGE_REPO_ROOT: "/repo/myrepo"  # point at the child; mount its stable parent below
 
     volumes:
-      - ./age-keys:/age:ro # directory containing the age identity (keys.txt)
-      - ./repo:/repo # tree containing the *.env(.age) files to decrypt
+      - ./age-keys:/age:ro  # directory holding the age identity (keys.txt)
+      - ./repos:/repo       # bind-mount the STABLE PARENT, not the repo dir (survives re-clone)

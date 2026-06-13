@@ -20,17 +20,6 @@ import (
 
 // --- Test helpers ---
 
-// sanitizePath strips the repo root prefix from paths for logging,
-// showing only the relative path (e.g. "apps/age/.env") to avoid
-// leaking internal directory structure.
-func sanitizePath(fullPath, root string) string {
-	rel, err := filepath.Rel(root, fullPath)
-	if err != nil {
-		return filepath.Base(fullPath)
-	}
-	return rel
-}
-
 // encryptArmored encrypts data with age armor format (ASCII-safe).
 func encryptArmored(data []byte, recipient age.Recipient) ([]byte, error) {
 	var buf bytes.Buffer
@@ -538,51 +527,6 @@ func TestDecryptAllWrongKey(t *testing.T) {
 	}
 }
 
-// --- Unit tests: sanitizePath ---
-
-func TestSanitizePath(t *testing.T) {
-	tests := []struct {
-		name     string
-		fullPath string
-		root     string
-		want     string
-	}{
-		{
-			name:     "strips root prefix",
-			fullPath: filepath.Join("repo", "apps", "age", ".env"),
-			root:     "repo",
-			want:     filepath.Join("apps", "age", ".env"),
-		},
-		{
-			name:     "root itself returns dot",
-			fullPath: "repo",
-			root:     "repo",
-			want:     ".",
-		},
-		{
-			name:     "deeper nesting",
-			fullPath: filepath.Join("a", "b", "c", "d.env"),
-			root:     filepath.Join("a", "b"),
-			want:     filepath.Join("c", "d.env"),
-		},
-		{
-			name:     "single file in root",
-			fullPath: filepath.Join("root", ".env"),
-			root:     "root",
-			want:     ".env",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := sanitizePath(tt.fullPath, tt.root)
-			if got != tt.want {
-				t.Errorf("sanitizePath(%q, %q) = %q, want %q", tt.fullPath, tt.root, got, tt.want)
-			}
-		})
-	}
-}
-
 // --- Unit tests: decryptFile ---
 
 func TestDecryptFile_skips_plaintext_env_file(t *testing.T) {
@@ -1038,65 +982,6 @@ func TestLoadIdentity_key_with_comment_lines(t *testing.T) {
 	}
 }
 
-// --- Property-based tests: sanitizePath ---
-
-// Property: sanitizePath output never contains the root directory as a prefix,
-// and always produces a shorter or equal-length string compared to fullPath.
-func TestProperty_SanitizePath_strips_root(t *testing.T) {
-	rapid.Check(t, func(rt *rapid.T) {
-		// Generate a root with 1-3 path components
-		numRootParts := rapid.IntRange(1, 3).Draw(rt, "numRootParts")
-		rootParts := make([]string, numRootParts)
-		for i := range numRootParts {
-			rootParts[i] = rapid.StringMatching(`[a-z]{1,8}`).Draw(rt, fmt.Sprintf("rootPart_%d", i))
-		}
-		root := filepath.Join(rootParts...)
-
-		// Generate additional path components below root
-		// Exclude "." and ".." — they collapse during filepath.Join and
-		// can make fullPath == root, violating the "shorter" invariant.
-		numRelParts := rapid.IntRange(1, 4).Draw(rt, "numRelParts")
-		relParts := make([]string, numRelParts)
-		for i := range numRelParts {
-			relParts[i] = rapid.StringMatching(`[a-z0-9_\-\.]{1,12}`).
-				Filter(func(s string) bool { return s != "." && s != ".." }).
-				Draw(rt, fmt.Sprintf("relPart_%d", i))
-		}
-		fullPath := filepath.Join(append(rootParts, relParts...)...)
-
-		got := sanitizePath(fullPath, root)
-
-		// Invariant 1: result should equal the relative portion
-		wantRel := filepath.Join(relParts...)
-		if got != wantRel {
-			rt.Fatalf("sanitizePath(%q, %q) = %q, want %q", fullPath, root, got, wantRel)
-		}
-
-		// Invariant 2: result should be shorter than fullPath (unless root is empty)
-		if len(got) >= len(fullPath) && root != "" {
-			rt.Fatalf("sanitizePath(%q, %q) = %q is not shorter than input", fullPath, root, got)
-		}
-	})
-}
-
-// Property: sanitizePath is idempotent when applied with the same root —
-// once the root is stripped, stripping again with "." as root returns the same value.
-func TestProperty_SanitizePath_idempotent(t *testing.T) {
-	rapid.Check(t, func(rt *rapid.T) {
-		root := rapid.StringMatching(`[a-z]{1,5}`).Draw(rt, "root")
-		file := rapid.StringMatching(`[a-z]{1,5}\.env`).Draw(rt, "file")
-		fullPath := filepath.Join(root, file)
-
-		first := sanitizePath(fullPath, root)
-		second := sanitizePath(first, ".")
-
-		if first != second {
-			rt.Fatalf("sanitizePath not idempotent: first=%q, second=%q (fullPath=%q, root=%q)",
-				first, second, fullPath, root)
-		}
-	})
-}
-
 // --- Property-based tests: decryptFile ---
 
 // Property: decrypting a plaintext .env file is always a no-op (file unchanged).
@@ -1320,18 +1205,6 @@ func BenchmarkDecryptFile(b *testing.B) {
 	}
 }
 
-// sanitizePath with unrelated paths (no common prefix).
-func TestSanitizePath_unrelated_paths(t *testing.T) {
-	got := sanitizePath(filepath.Join("alpha", "file.env"), filepath.Join("beta", "other"))
-
-	// filepath.Rel can compute a relative path even for unrelated dirs on Unix
-	// (e.g. "../../alpha/file.env"), so we just verify it doesn't panic
-	// and returns a non-empty string.
-	if got == "" {
-		t.Error("sanitizePath with unrelated paths returned empty string")
-	}
-}
-
 // loadIdentity with a file containing multiple identities — only the first is used.
 func TestLoadIdentity_multiple_identities_uses_first(t *testing.T) {
 	id1 := newIdentity(t)
@@ -1493,34 +1366,6 @@ func TestDecryptFile_decrypted_content_over_1MB_limit(t *testing.T) {
 }
 
 // --- Tests added from review: coverage gap closers ---
-
-// sanitizePath falls back to filepath.Base when filepath.Rel errors.
-// filepath.Rel returns an error when one path is absolute and the other
-// is relative — they can't be made relative to each other.
-func TestSanitizePath_falls_back_to_base_when_rel_errors(t *testing.T) {
-	// Absolute fullPath + relative root → filepath.Rel errors.
-	absPath := string(filepath.Separator) + filepath.Join("abs", "dir", "app.env")
-	got := sanitizePath(absPath, "relroot")
-
-	want := "app.env"
-	if got != want {
-		t.Errorf("sanitizePath(%q, %q) = %q, want %q (should fall back to Base)",
-			absPath, "relroot", got, want)
-	}
-}
-
-// Symmetric case: relative fullPath + absolute root should also trigger
-// the filepath.Rel error branch and fall back to filepath.Base.
-func TestSanitizePath_falls_back_with_relative_input_absolute_root(t *testing.T) {
-	absRoot := string(filepath.Separator) + filepath.Join("abs", "root")
-	got := sanitizePath(filepath.Join("rel", "path", "config.env"), absRoot)
-
-	want := "config.env"
-	if got != want {
-		t.Errorf("sanitizePath(%q, %q) = %q, want %q",
-			filepath.Join("rel", "path", "config.env"), absRoot, got, want)
-	}
-}
 
 // decryptFile returns false when Stat succeeds but ReadFile fails
 // (file with mode 0 on Unix is stat-able but unreadable).
