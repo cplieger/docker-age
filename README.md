@@ -110,7 +110,7 @@ This means you can mix encrypted and plaintext `.env` files in the same tree, an
 
 ## Healthcheck
 
-`age-decrypt health` reads `/tmp/.healthy`. The marker is written when the most recent `decrypt` run completed successfully, and removed (or left unset) if a run failed — in **server mode** the marker is set only when every file decrypted cleanly (a partial failure reports unhealthy). The baked healthcheck targets the long-running server; the one-shot `decrypt` example above disables it because the one-shot never writes the marker. The standard distroless `HEALTHCHECK` uses CMD form (no shell needed):
+`age-decrypt health` reads `/tmp/.healthy`. The marker is written when the most recent `decrypt` run completed successfully, and removed (or left unset) if a run failed — in **server mode** the marker is set only when every file decrypted cleanly (any failure, including an unreadable repo root, reports unhealthy). Server mode never exits on a startup decrypt failure: it stays running and marks itself unhealthy, so it remains a valid `docker exec age /age-decrypt decrypt` target (exiting would crash-loop the container under `restart: unless-stopped`). The loud, deploy-blocking signal is the non-zero exit of the one-shot `decrypt` subcommand. The baked healthcheck targets the long-running server; the one-shot `decrypt` example above disables it because the one-shot never writes the marker. The standard distroless `HEALTHCHECK` uses CMD form (no shell needed):
 
 ```dockerfile
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
