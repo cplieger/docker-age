@@ -59,7 +59,7 @@ before touching `decrypt.go`.
 - **Server mode never exits on a startup decrypt failure.** `runServer`
   performs a startup decrypt and sets the health marker via
   `startupHealthy(result, err)` (`err == nil && result.Failed == 0`): a hard
-  error (unreadable repo root) *and* any per-file failure both mark the
+  error (unreadable repo root) _and_ any per-file failure both mark the
   container **unhealthy but keep it running**. The container's role is to be a
   long-lived `docker exec age /age-decrypt decrypt` target for the deploy;
   exiting on startup would crash-loop it under `restart: unless-stopped` and

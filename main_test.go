@@ -942,16 +942,16 @@ func TestRunSubcommand_returns_one_on_invalid_root(t *testing.T) {
 
 func TestStartupHealthy(t *testing.T) {
 	tests := []struct {
+		err    error
 		name   string
 		result decryptResult
-		err    error
 		want   bool
 	}{
-		{"clean run is healthy", decryptResult{Decrypted: 3, Failed: 0}, nil, true},
-		{"empty clean run is healthy", decryptResult{}, nil, true},
-		{"per-file failure is unhealthy", decryptResult{Decrypted: 2, Failed: 1}, nil, false},
-		{"hard error is unhealthy", decryptResult{}, errors.New("open root: stale mount"), false},
-		{"hard error with partial counts is unhealthy", decryptResult{Decrypted: 1, Failed: 0}, errors.New("walk root"), false},
+		{name: "clean run is healthy", result: decryptResult{Decrypted: 3, Failed: 0}, err: nil, want: true},
+		{name: "empty clean run is healthy", result: decryptResult{}, err: nil, want: true},
+		{name: "per-file failure is unhealthy", result: decryptResult{Decrypted: 2, Failed: 1}, err: nil, want: false},
+		{name: "hard error is unhealthy", result: decryptResult{}, err: errors.New("open root: stale mount"), want: false},
+		{name: "hard error with partial counts is unhealthy", result: decryptResult{Decrypted: 1, Failed: 0}, err: errors.New("walk root"), want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
