@@ -18,9 +18,10 @@ the canonical identifier.
 Flat `package main`, one concern per file:
 
 - `main.go` — entry point and the two run modes (`runSubcommand`,
-  `runServer`). The `health` probe is intercepted here _before_
-  `parseConfig` runs, because the probe must work without `AGE_KEY_FILE`
-  set.
+  `runServer`), plus the file-based health marker/probe wiring via
+  `github.com/cplieger/health`. The `health` probe is intercepted here
+  _before_ `parseConfig` runs, because the probe must work without
+  `AGE_KEY_FILE` set.
 - `config.go` — env-var parsing (`AGE_KEY_FILE`, `AGE_REPO_ROOT`) and mode
   selection from `os.Args[1]` (`decrypt` → subcommand, `health` → probe,
   empty → server).
@@ -29,8 +30,6 @@ Flat `package main`, one concern per file:
   callers. Caps the key file at 1 MB.
 - `decrypt.go` — the core: `decryptAll` walks the tree and `decryptFile`
   handles one file.
-- `health.go` — file-based health marker, delegating to
-  `github.com/cplieger/health`.
 
 ## Load-bearing invariants
 
@@ -49,8 +48,18 @@ before touching `decrypt.go`.
   orphan sweep. Keep the per-call uniqueness.
 - **`decryptFile` is tri-state, and skips are not failures.** It returns
   `fileSkipped` (not age-formatted — legitimate, logged at debug),
-  `fileDecrypted`, or `fileFailed`. The process exits non-zero only when
-  `result.Failed > 0`. A tree of plaintext `.env` files is a clean run.
+  `fileDecrypted`, or `fileFailed`. The process exits non-zero when
+  `result.Failed > 0` **or** when the repo root itself is unreadable: a
+  root-level `WalkDir` error (e.g. a stale mount, `readdirent /repo: no such
+  file or directory`) is fatal, so a stale `/repo` fails loudly instead of
+  reporting a clean `decrypted=0` / exit 0. Per-subdirectory walk errors stay
+  non-fatal (logged, the walk continues). A tree of plaintext `.env` files —
+  or a legitimately empty tree — is still a clean run.
+- **Server mode gates the health marker on the decrypt outcome.** `runServer`
+  calls `marker.Set(result.Failed == 0)` — a startup decrypt with any failed
+  file leaves the container unhealthy, matching `runSubcommand`'s non-zero exit
+  and the documented marker contract. Don't revert it to an unconditional
+  `Set(true)`.
 - **Decryption is idempotent.** Format is detected by the first bytes
   (armored `-----BEGIN AGE ENCRYPTED FILE-----` vs binary
   `age-encryption.org/v1`); a previously-decrypted file is plaintext and
@@ -119,8 +128,9 @@ docker build -t age-decrypt .
   operator-supplied, not untrusted input. Keep the explanation comment if
   you move the line — `nolintlint` requires it.
 - Mutation testing config lives in `.gremlins.yaml` and excludes
-  `main.go` and `health.go` (lifecycle and marker filesystem ops that
-  mutate without signal). That's expected, not a coverage gap to fix.
+  `main.go` (lifecycle/signal handling plus the health-marker filesystem
+  ops that mutate without signal). That's expected, not a coverage gap to
+  fix.
 - CI (`.github/workflows/ci.yaml`) is synced from `cplieger/ci` — don't
   edit it locally; changes land upstream.
 

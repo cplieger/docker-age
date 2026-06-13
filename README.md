@@ -15,7 +15,7 @@ Walks a mounted directory tree, finds every `.env` file that's age-encrypted (bi
 
 The `age-decrypt` binary is a single static Go executable on `gcr.io/distroless/static:nonroot`. It supports two subcommands:
 
-- `decrypt` — walk the tree, decrypt every age-encrypted `.env`, exit 0 on success
+- `decrypt` — walk the tree, decrypt every age-encrypted `.env`; exit 0 on success, non-zero if any file fails to decrypt or the repo root is unreadable (e.g. a stale mount)
 - `health` — file-based health probe (writes `/tmp/.healthy` on successful decrypt; reads it back to report status)
 
 ### Why this design
@@ -49,15 +49,19 @@ services:
     image: ghcr.io/cplieger/docker-age:latest
     container_name: age
     command: ["decrypt"]
-    user: "0:0"   # required for repo write access; see below
+    # The image bakes a server-mode HEALTHCHECK (it reads /tmp/.healthy, which only
+    # the long-running server writes). This one-shot decrypt never writes the marker,
+    # so disable the healthcheck here to avoid a misleading unhealthy status.
+    healthcheck:
+      disable: true
 
     environment:
       AGE_KEY_FILE: "/age/keys.txt"
-      AGE_REPO_ROOT: "/repo/myrepo"  # point at the child; mount the stable parent
+      AGE_REPO_ROOT: "/repo"
 
     volumes:
-      - ./age-keys:/age:ro          # directory with the age identity (keys.txt, mode 0600)
-      - ./repos:/repo                # bind-mount the STABLE PARENT, not the repo dir (survives re-clone)
+      - "/path/to/age-keys:/age:ro"  # directory with the age identity (keys.txt, mode 0600)
+      - "/path/to/repo:/repo"        # tree containing the *.env files to decrypt
 ```
 
 Or as a one-shot before deploy:
@@ -91,7 +95,7 @@ docker run --rm \
 
 | Command | Description |
 |---------|-------------|
-| `decrypt` | Walk `AGE_REPO_ROOT`, decrypt every age-encrypted `.env` in place, exit 0 on success |
+| `decrypt` | Walk `AGE_REPO_ROOT`, decrypt every age-encrypted `.env` in place. Exit 0 on success; non-zero if any file fails to decrypt or the repo root is unreadable (stale mount). |
 | `health` | Read the `/tmp/.healthy` marker — exit 0 if healthy, 1 if not. For Docker `HEALTHCHECK`. |
 
 ## File-format detection
@@ -106,7 +110,7 @@ This means you can mix encrypted and plaintext `.env` files in the same tree, an
 
 ## Healthcheck
 
-`age-decrypt health` reads `/tmp/.healthy`. The marker is written when the most recent `decrypt` run completed successfully, and removed if a run failed. The standard distroless `HEALTHCHECK` uses CMD form (no shell needed):
+`age-decrypt health` reads `/tmp/.healthy`. The marker is written when the most recent `decrypt` run completed successfully, and removed (or left unset) if a run failed — in **server mode** the marker is set only when every file decrypted cleanly (a partial failure reports unhealthy). The baked healthcheck targets the long-running server; the one-shot `decrypt` example above disables it because the one-shot never writes the marker. The standard distroless `HEALTHCHECK` uses CMD form (no shell needed):
 
 ```dockerfile
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
@@ -115,8 +119,8 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
 
 ## File-permission requirements
 
-- The age identity file (`keys.txt`) must be readable by the container user — typically root inside the container, mode 0600 on the host
-- The container needs write access to every `.env` it decrypts — if your repo is owned by a non-root host user (typical homelab setup), the safest pattern is to run the container as root with the repo bind-mounted read-write, then let the host's directory ownership resume after deploy
+- The age identity file (`keys.txt`) must be readable by the container user. The image runs as the distroless non-root user by default; keep the identity mode 0600 on the host and readable by that user.
+- The container needs write access to the `.env` files it rewrites and the directories holding them (decryption is an atomic temp-then-rename). Run it as a user that owns the tree, or fix ownership on the mounts. If the tree has mixed or root ownership (for example an orchestrator that clones it as root), override with `user: "0:0"`.
 
 ## Security
 

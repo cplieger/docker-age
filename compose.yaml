@@ -5,12 +5,20 @@ services:
     image: ghcr.io/cplieger/docker-age:latest
     container_name: age
     command: ["decrypt"]
-    user: "0:0"  # must write decrypted .env files across the host-owned repo tree
+    # The image bakes a HEALTHCHECK for server mode: it reads /tmp/.healthy,
+    # which only the long-running server writes. The one-shot decrypt
+    # command never writes that marker, so disable the healthcheck here to
+    # avoid a misleading unhealthy status and a depends_on:
+    # condition: service_healthy that never resolves.
+    healthcheck:
+      disable: true
+    # Runs as the image's non-root user; make sure the mounts are accessible to it.
+    # Override with `user: "0:0"` if the repo tree has mixed or root ownership.
 
     environment:
       AGE_KEY_FILE: "/age/keys.txt"
-      AGE_REPO_ROOT: "/repo/myrepo"  # point at the child; mount its stable parent below
+      AGE_REPO_ROOT: "/repo"
 
     volumes:
-      - ./age-keys:/age:ro  # directory holding the age identity (keys.txt)
-      - ./repos:/repo       # bind-mount the STABLE PARENT, not the repo dir (survives re-clone)
+      - "/path/to/age-keys:/age:ro"  # directory holding the age identity (keys.txt)
+      - "/path/to/repo:/repo"        # tree containing the *.env files to decrypt
