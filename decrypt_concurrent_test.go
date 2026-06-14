@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"filippo.io/age"
 )
 
 // TestDecryptAll_concurrent_safe reproduces a production race: when an
@@ -51,7 +53,7 @@ func TestDecryptAll_concurrent_safe(t *testing.T) {
 			defer wg.Done()
 			// Each goroutine does its own full pass over the tree — same as
 			// each stack's pre_deploy in the real topology.
-			res, err := decryptAll(context.Background(), tmpDir, identity)
+			res, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity})
 			if err != nil {
 				errCh <- fmt.Errorf("decryptAll returned error: %w", err)
 				return
@@ -110,7 +112,7 @@ func TestDecryptAll_sweep_preserves_young_peer_tmps(t *testing.T) {
 		t.Fatalf("write peer tmp: %v", err)
 	}
 
-	if _, err := decryptAll(context.Background(), tmpDir, identity); err != nil {
+	if _, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}); err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
 
@@ -135,7 +137,7 @@ func TestDecryptAll_sweep_removes_stale_per_pid_tmps(t *testing.T) {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	if _, err := decryptAll(context.Background(), tmpDir, identity); err != nil {
+	if _, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}); err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
 
@@ -161,7 +163,7 @@ func TestDecryptFile_tmp_name_encodes_pid(t *testing.T) {
 	}
 	defer func() { _ = rootDir.Close() }()
 
-	if got := decryptFile(context.Background(), rootDir, "pinned.env", identity); got != fileDecrypted {
+	if got := decryptFile(context.Background(), rootDir, "pinned.env", []age.Identity{identity}); got != fileDecrypted {
 		t.Fatalf("decryptFile = %d, want %d (fileDecrypted)", got, fileDecrypted)
 	}
 

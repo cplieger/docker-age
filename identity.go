@@ -8,16 +8,19 @@ import (
 	"filippo.io/age"
 )
 
-// loadIdentity reads an age identity from the given file. The return type is
-// the age.Identity interface rather than *age.X25519Identity so the caller
-// survives future key-type changes (plugin, passphrase, etc.) without any
-// downstream signature churn.
+// loadIdentities reads all age identities from the given file. The element
+// type is the age.Identity interface rather than *age.X25519Identity so the
+// caller survives future key-type changes (plugin, passphrase, etc.) without
+// any downstream signature churn. All parsed identities are returned and
+// forwarded to the variadic age.Decrypt so multi-identity key rotation
+// (AGE_KEY_FILE documents "one identity per line") works as intended.
 //
 // It rejects files larger than 1 MB to prevent OOM on misconfigured mounts.
-func loadIdentity(path string) (age.Identity, error) {
-	// Path comes from the -key-file CLI flag (operator-supplied), not
-	// from any untrusted input — gosec G304 is a false positive here.
-	f, err := os.Open(path) // #nosec G304 -- CLI-flag-sourced trusted path
+func loadIdentities(path string) ([]age.Identity, error) {
+	// Path comes from the AGE_KEY_FILE environment variable
+	// (operator-supplied, read in config.go), not from any untrusted
+	// input — gosec G304 is a false positive here.
+	f, err := os.Open(path) // #nosec G304 -- AGE_KEY_FILE env-sourced trusted path
 	if err != nil {
 		return nil, fmt.Errorf("open key file: %w", err)
 	}
@@ -41,5 +44,5 @@ func loadIdentity(path string) (age.Identity, error) {
 	if len(identities) == 0 {
 		return nil, errors.New("no identities found in key file")
 	}
-	return identities[0], nil
+	return identities, nil
 }

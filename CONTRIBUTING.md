@@ -25,9 +25,10 @@ Flat `package main`, one concern per file:
 - `config.go` — env-var parsing (`AGE_KEY_FILE`, `AGE_REPO_ROOT`) and mode
   selection from `os.Args[1]` (`decrypt` → subcommand, `health` → probe,
   empty → server).
-- `identity.go` — loads the age identity, returning the `age.Identity`
-  interface (not a concrete key type) so future key kinds don't churn
-  callers. Caps the key file at 1 MB.
+- `identity.go` — `loadIdentities` loads **all** age identities from the key
+  file, returning `[]age.Identity` (the interface, not a concrete key type) so
+  future key kinds don't churn callers and multiple identities enable key
+  rotation. Caps the key file at 1 MB.
 - `decrypt.go` — the core: `decryptAll` walks the tree and `decryptFile`
   handles one file.
 
@@ -37,10 +38,12 @@ These are easy to break and the tests exist to catch them. Read this
 before touching `decrypt.go`.
 
 - **All tree I/O goes through the `*os.Root` handle.** `decryptAll` opens
-  the tree with `os.OpenRoot` and every read/write/rename uses
-  `rootDir.ReadFile` / `rootDir.WriteFile` / `rootDir.Rename`. This
-  confines I/O to the mounted tree and blocks symlink escapes. Do not
-  reach for the bare `os` package for paths inside the tree.
+  the tree with `os.OpenRoot` and every open/write/rename uses the `rootDir`
+  handle: `rootDir.Open` (reads stream through a bounded `io.LimitReader`,
+  not a `Stat`+`ReadFile`, which also enforces the size cap on bytes actually
+  read), `rootDir.WriteFile`, `rootDir.Rename`. This confines I/O to the
+  mounted tree and blocks symlink escapes. Do not reach for the bare `os`
+  package for paths inside the tree.
 - **Temp file names must stay unique per call.** `decryptFile` names its
   temp file `<rel>.tmp.<pid>.<counter>` using the PID plus a process-local
   atomic counter (`tmpCounter`). A shared name like `.env.tmp` reintroduces
@@ -69,6 +72,12 @@ before touching `decrypt.go`.
   (non-zero exit); server mode surfaces failures through the health marker.
   Don't make `runServer` return non-zero on a startup decrypt failure, and
   don't revert the marker to an unconditional `Set(true)`.
+- **`loadIdentities` returns every identity, and `decryptFile` tries them
+  all.** The key file is "one identity per line"; `loadIdentities` returns the
+  full `[]age.Identity` and `decryptFile` forwards it to the variadic
+  `age.Decrypt`. Returning only the first, or threading a single
+  `age.Identity` through, silently breaks key rotation — a file encrypted to
+  the second key would fail. Keep the slice end-to-end.
 - **Decryption is idempotent.** Format is detected by the first bytes
   (armored `-----BEGIN AGE ENCRYPTED FILE-----` vs binary
   `age-encryption.org/v1`); a previously-decrypted file is plaintext and

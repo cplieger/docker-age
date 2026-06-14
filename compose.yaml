@@ -1,24 +1,17 @@
 services:
-  # age-decrypt: decrypts age-encrypted *.env files in a mounted tree, in place.
-  # Runs once and exits (the `decrypt` subcommand); `health` is also available.
+  # Decrypts age-encrypted *.env files in a mounted tree, in place.
+  # No command = long-lived server; trigger a pass with:
+  #   docker exec age /age-decrypt decrypt
+  # Subcommands: decrypt (one pass then exit), health. See README.
   age:
     image: ghcr.io/cplieger/docker-age:latest
     container_name: age
-    command: ["decrypt"]
-    # The image bakes a HEALTHCHECK for server mode: it reads /tmp/.healthy,
-    # which only the long-running server writes. The one-shot decrypt
-    # command never writes that marker, so disable the healthcheck here to
-    # avoid a misleading unhealthy status and a depends_on:
-    # condition: service_healthy that never resolves.
-    healthcheck:
-      disable: true
-    # Runs as the image's non-root user; make sure the mounts are accessible to it.
-    # Override with `user: "0:0"` if the repo tree has mixed or root ownership.
+    restart: unless-stopped
 
     environment:
-      AGE_KEY_FILE: "/age/keys.txt"
-      AGE_REPO_ROOT: "/repo"
+      AGE_KEY_FILE: "/age/keys.txt"  # required; age identity file
+      # AGE_REPO_ROOT defaults to /repo; set only to target a subdir (see README).
 
     volumes:
-      - "/path/to/age-keys:/age:ro"  # directory holding the age identity (keys.txt)
-      - "/path/to/repo:/repo"        # tree containing the *.env files to decrypt
+      - "/path/to/age-keys:/age:ro"  # dir holding the age identity (keys.txt)
+      - "/path/to/repo:/repo"        # tree to decrypt (or a folder of repos)
