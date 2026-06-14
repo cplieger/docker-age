@@ -32,8 +32,10 @@ const (
 
 // decryptResult summarizes a pass over the repo tree.
 type decryptResult struct {
-	Decrypted int // age-formatted files that were successfully rewritten in place
-	Failed    int // age-formatted files that failed to decrypt/write
+	Decrypted  int // age-formatted files that were successfully rewritten in place
+	Failed     int // age-formatted files that failed to decrypt/write
+	Skipped    int // non-age files encountered (legitimate skips)
+	WalkErrors int // errors reported by the tree walk itself
 }
 
 // fileStatus reports the outcome of a single decryptFile call.
@@ -48,26 +50,27 @@ const (
 // decryptFile reads, decrypts, and atomically overwrites a single .env file.
 // Returns fileDecrypted on success, fileSkipped for non-age files, and
 // fileFailed when an age-formatted file could not be rewritten.
-func decryptFile(ctx context.Context, rootDir *os.Root, rel string, identity age.Identity) fileStatus {
+func decryptFile(ctx context.Context, rootDir *os.Root, rel string, identities []age.Identity) fileStatus {
 	if ctx.Err() != nil {
-		return fileFailed
+		slog.Debug("skipping file due to context cancellation", "file", rel, "error", ctx.Err())
+		return fileSkipped
 	}
 	// Encrypted .env files are small (a few KB). Reject anything over 10 MB
 	// to prevent OOM if a large file ends up with a .env suffix.
 	const maxEncryptedSize = 10 << 20
-	info, err := rootDir.Stat(rel)
+	f, err := rootDir.Open(rel)
 	if err != nil {
-		slog.Warn("stat error", "file", rel, "error", err)
+		slog.Warn("open error", "file", rel, "error", err)
 		return fileFailed
 	}
-	if info.Size() > maxEncryptedSize {
-		slog.Warn("encrypted file too large, skipping", "file", rel, "size", info.Size())
-		return fileFailed
-	}
-
-	data, err := rootDir.ReadFile(rel)
+	data, err := io.ReadAll(io.LimitReader(f, maxEncryptedSize+1))
+	_ = f.Close()
 	if err != nil {
 		slog.Warn("read error", "file", rel, "error", err)
+		return fileFailed
+	}
+	if len(data) > maxEncryptedSize {
+		slog.Warn("encrypted file exceeds size limit, treating as failure", "file", rel, "size", len(data))
 		return fileFailed
 	}
 
@@ -85,7 +88,7 @@ func decryptFile(ctx context.Context, rootDir *os.Root, rel string, identity age
 		reader = armor.NewReader(reader)
 	}
 
-	r, err := age.Decrypt(reader, identity)
+	r, err := age.Decrypt(reader, identities...)
 	if err != nil {
 		slog.Warn("decrypt error", "file", rel, "error", err)
 		return fileFailed
@@ -94,12 +97,13 @@ func decryptFile(ctx context.Context, rootDir *os.Root, rel string, identity age
 	// Guard against decompression bombs: .env files should never exceed 1 MB.
 	const maxDecryptedSize = 1 << 20
 	cleartext, err := io.ReadAll(io.LimitReader(r, maxDecryptedSize+1))
+	defer clear(cleartext)
 	if err != nil {
 		slog.Warn("decrypt read error", "file", rel, "error", err)
 		return fileFailed
 	}
 	if len(cleartext) > maxDecryptedSize {
-		slog.Warn("decrypted file exceeds 1 MB limit, skipping", "file", rel)
+		slog.Warn("decrypted file exceeds 1 MB limit, treating as failure", "file", rel)
 		return fileFailed
 	}
 
@@ -131,8 +135,9 @@ func decryptFile(ctx context.Context, rootDir *os.Root, rel string, identity age
 	return fileDecrypted
 }
 
-// sweepOrphanTmpFile removes a single orphaned `.env.tmp` or `.env.tmp.<pid>`
-// file if it is older than staleThreshold. Young temp files are preserved to
+// sweepOrphanTmpFile removes a single orphaned `.env.tmp` or
+// `.env.tmp.<pid>.<counter>` file if it is older than staleThreshold.
+// Young temp files are preserved to
 // avoid ripping the tmp out from under a concurrent peer that is mid-decrypt.
 func sweepOrphanTmpFile(rootDir *os.Root, rel string, staleThreshold time.Duration) bool {
 	cutoff := time.Now().Add(-staleThreshold)
@@ -177,7 +182,7 @@ func isOrphanTmpFile(name string) bool {
 // pass, eliminating a redundant full tree traversal.
 // Returns per-outcome counts and an error only when the root itself cannot
 // be opened.
-func decryptAll(ctx context.Context, root string, identity age.Identity) (decryptResult, error) {
+func decryptAll(ctx context.Context, root string, identities []age.Identity) (decryptResult, error) {
 	rootDir, err := os.OpenRoot(root)
 	if err != nil {
 		return decryptResult{}, fmt.Errorf("open root: %w", err)
@@ -200,6 +205,7 @@ func decryptAll(ctx context.Context, root string, identity age.Identity) (decryp
 				return filepath.SkipAll
 			}
 			slog.Warn("walk error", "path", path, "error", walkErr)
+			result.WalkErrors++
 			return nil
 		}
 		if !d.Type().IsRegular() {
@@ -228,11 +234,13 @@ func decryptAll(ctx context.Context, root string, identity age.Identity) (decryp
 		if relErr != nil {
 			return nil
 		}
-		switch decryptFile(ctx, rootDir, rel, identity) {
+		switch decryptFile(ctx, rootDir, rel, identities) {
 		case fileDecrypted:
 			result.Decrypted++
 		case fileFailed:
 			result.Failed++
+		case fileSkipped:
+			result.Skipped++
 		}
 		return nil
 	})

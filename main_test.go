@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -87,7 +88,7 @@ func writeEncryptedEnv(t *testing.T, dir, name string, content []byte, recipient
 // directly and use the decryptResult struct fields. Uses a background
 // context; tests that need cancellation should call decryptAll directly.
 func decryptAllCount(root string, identity age.Identity) (int, error) {
-	res, err := decryptAll(context.Background(), root, identity)
+	res, err := decryptAll(context.Background(), root, []age.Identity{identity})
 	return res.Decrypted, err
 }
 
@@ -95,7 +96,7 @@ func decryptAllCount(root string, identity age.Identity) (int, error) {
 // bool return for existing tests. New tests that need to distinguish
 // fileSkipped from fileFailed should call decryptFile directly.
 func decryptFileBool(rootDir *os.Root, rel string, identity age.Identity) bool {
-	return decryptFile(context.Background(), rootDir, rel, identity) == fileDecrypted
+	return decryptFile(context.Background(), rootDir, rel, []age.Identity{identity}) == fileDecrypted
 }
 
 // --- Property-based tests ---
@@ -451,13 +452,13 @@ func TestLoadIdentityValid(t *testing.T) {
 	keyPath := filepath.Join(tmpDir, "key.txt")
 	_ = os.WriteFile(keyPath, []byte(identity.String()+"\n"), 0o600)
 
-	loaded, err := loadIdentity(keyPath)
+	loaded, err := loadIdentities(keyPath)
 	if err != nil {
-		t.Fatalf("loadIdentity: %v", err)
+		t.Fatalf("loadIdentities: %v", err)
 	}
-	loadedX, ok := loaded.(*age.X25519Identity)
+	loadedX, ok := loaded[0].(*age.X25519Identity)
 	if !ok {
-		t.Fatalf("expected *age.X25519Identity, got %T", loaded)
+		t.Fatalf("expected *age.X25519Identity, got %T", loaded[0])
 	}
 	if loadedX.Recipient().String() != identity.Recipient().String() {
 		t.Errorf("loaded recipient %q != original %q",
@@ -469,21 +470,21 @@ func TestLoadIdentityErrors(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	t.Run("non-existent file", func(t *testing.T) {
-		if _, err := loadIdentity(filepath.Join(tmpDir, "nonexistent")); err == nil {
+		if _, err := loadIdentities(filepath.Join(tmpDir, "nonexistent")); err == nil {
 			t.Error("expected error")
 		}
 	})
 	t.Run("empty file", func(t *testing.T) {
 		p := filepath.Join(tmpDir, "empty.txt")
 		_ = os.WriteFile(p, []byte{}, 0o644)
-		if _, err := loadIdentity(p); err == nil {
+		if _, err := loadIdentities(p); err == nil {
 			t.Error("expected error")
 		}
 	})
 	t.Run("invalid content", func(t *testing.T) {
 		p := filepath.Join(tmpDir, "garbage.txt")
 		_ = os.WriteFile(p, []byte("not a valid age key"), 0o644)
-		if _, err := loadIdentity(p); err == nil {
+		if _, err := loadIdentities(p); err == nil {
 			t.Error("expected error")
 		}
 	})
@@ -491,7 +492,7 @@ func TestLoadIdentityErrors(t *testing.T) {
 		p := filepath.Join(tmpDir, "huge.txt")
 		// Write just over 1 MB to trigger the size guard
 		_ = os.WriteFile(p, bytes.Repeat([]byte("x"), 1<<20+1), 0o644)
-		_, err := loadIdentity(p)
+		_, err := loadIdentities(p)
 		if err == nil {
 			t.Error("expected error for oversized key file")
 		}
@@ -819,7 +820,7 @@ func TestDecryptAll_respects_context_cancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	result, err := decryptAll(ctx, tmpDir, identity)
+	result, err := decryptAll(ctx, tmpDir, []age.Identity{identity})
 	if err != nil {
 		t.Fatalf("decryptAll with canceled ctx: %v", err)
 	}
@@ -844,7 +845,7 @@ func TestDecryptAll_counts_failed_files(t *testing.T) {
 	// One plaintext .env — should be skipped (not counted as failed).
 	_ = os.WriteFile(filepath.Join(tmpDir, "plain.env"), []byte("PLAIN=val\n"), 0o644)
 
-	result, err := decryptAll(context.Background(), tmpDir, decryptID)
+	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{decryptID})
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -884,7 +885,7 @@ func TestDecryptAll_sweeps_orphan_tmp_files(t *testing.T) {
 	original := []byte("NORMAL_KEY=value\n")
 	writeEncryptedEnv(t, tmpDir, "normal.env", original, identity.Recipient())
 
-	result, err := decryptAll(context.Background(), tmpDir, identity)
+	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity})
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -908,7 +909,7 @@ func TestRunSubcommand_returns_zero_on_success(t *testing.T) {
 	original := []byte("SUB_KEY=value\n")
 	writeEncryptedEnv(t, tmpDir, "app.env", original, identity.Recipient())
 
-	code := runSubcommand(tmpDir, identity)
+	code := runSubcommand(tmpDir, []age.Identity{identity})
 	if code != 0 {
 		t.Errorf("runSubcommand(valid) = %d, want 0", code)
 	}
@@ -922,7 +923,7 @@ func TestRunSubcommand_returns_one_on_decrypt_failure(t *testing.T) {
 	// Encrypt with one key, decrypt with another — produces Failed > 0.
 	writeEncryptedEnv(t, tmpDir, "secret.env", []byte("S=v\n"), encryptID.Recipient())
 
-	code := runSubcommand(tmpDir, decryptID)
+	code := runSubcommand(tmpDir, []age.Identity{decryptID})
 	if code != 1 {
 		t.Errorf("runSubcommand(wrong key) = %d, want 1 (Failed > 0)", code)
 	}
@@ -932,7 +933,7 @@ func TestRunSubcommand_returns_one_on_invalid_root(t *testing.T) {
 	identity := newIdentity(t)
 	bogusRoot := filepath.Join(t.TempDir(), "does-not-exist")
 
-	code := runSubcommand(bogusRoot, identity)
+	code := runSubcommand(bogusRoot, []age.Identity{identity})
 	if code != 1 {
 		t.Errorf("runSubcommand(invalid root) = %d, want 1", code)
 	}
@@ -975,7 +976,7 @@ func TestRunServer_stays_alive_on_startup_error(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	code := runServer(ctx, bogusRoot, markerPath, identity)
+	code := runServer(ctx, bogusRoot, markerPath, []age.Identity{identity})
 	if code != 0 {
 		t.Errorf("runServer(startup error) = %d, want 0 (must stay alive, not crash-loop)", code)
 	}
@@ -990,7 +991,7 @@ func TestRunServer_returns_zero_on_clean_shutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	code := runServer(ctx, repoDir, markerPath, identity)
+	code := runServer(ctx, repoDir, markerPath, []age.Identity{identity})
 	if code != 0 {
 		t.Errorf("runServer(clean shutdown) = %d, want 0", code)
 	}
@@ -1007,12 +1008,12 @@ func TestLoadIdentity_key_at_exact_size_limit(t *testing.T) {
 	p := filepath.Join(tmpDir, "exact-1mb.txt")
 	_ = os.WriteFile(p, bytes.Repeat([]byte("x"), 1<<20), 0o644)
 
-	_, err := loadIdentity(p)
+	_, err := loadIdentities(p)
 	if err == nil {
 		t.Fatal("expected error for non-key content")
 	}
 	if strings.Contains(err.Error(), "too large") {
-		t.Errorf("loadIdentity(%q) rejected at exact limit: %v", "exact-1mb.txt", err)
+		t.Errorf("loadIdentities(%q) rejected at exact limit: %v", "exact-1mb.txt", err)
 	}
 }
 
@@ -1026,13 +1027,13 @@ func TestLoadIdentity_key_with_comment_lines(t *testing.T) {
 	keyPath := filepath.Join(tmpDir, "key-with-comments.txt")
 	_ = os.WriteFile(keyPath, []byte(content), 0o600)
 
-	loaded, err := loadIdentity(keyPath)
+	loaded, err := loadIdentities(keyPath)
 	if err != nil {
-		t.Fatalf("loadIdentity with comments: %v", err)
+		t.Fatalf("loadIdentities with comments: %v", err)
 	}
-	loadedX, ok := loaded.(*age.X25519Identity)
+	loadedX, ok := loaded[0].(*age.X25519Identity)
 	if !ok {
-		t.Fatalf("expected *age.X25519Identity, got %T", loaded)
+		t.Fatalf("expected *age.X25519Identity, got %T", loaded[0])
 	}
 	if loadedX.Recipient().String() != identity.Recipient().String() {
 		t.Errorf("loadIdentity recipient = %q, want %q",
@@ -1184,7 +1185,7 @@ func TestDecryptFile_status(t *testing.T) {
 			}
 			defer func() { _ = rootDir.Close() }()
 
-			got := decryptFile(context.Background(), rootDir, tc.file, tc.id)
+			got := decryptFile(context.Background(), rootDir, tc.file, []age.Identity{tc.id})
 			if got != tc.want {
 				t.Errorf("decryptFile(%s) = %d, want %d", tc.name, got, tc.want)
 			}
@@ -1221,7 +1222,7 @@ func FuzzDecryptFile(f *testing.F) {
 		defer func() { _ = rootDir.Close() }()
 
 		// Must not panic regardless of input.
-		_ = decryptFile(context.Background(), rootDir, "fuzz.env", id)
+		_ = decryptFile(context.Background(), rootDir, "fuzz.env", []age.Identity{id})
 	})
 }
 
@@ -1256,15 +1257,16 @@ func BenchmarkDecryptFile(b *testing.B) {
 		if err := os.WriteFile(envPath, encrypted, 0o644); err != nil {
 			b.Fatalf("write: %v", err)
 		}
-		status := decryptFile(context.Background(), rootDir, "bench.env", id)
+		status := decryptFile(context.Background(), rootDir, "bench.env", []age.Identity{id})
 		if status != fileDecrypted {
 			b.Fatalf("decryptFile = %d, want %d (fileDecrypted)", status, fileDecrypted)
 		}
 	}
 }
 
-// loadIdentity with a file containing multiple identities — only the first is used.
-func TestLoadIdentity_multiple_identities_uses_first(t *testing.T) {
+// loadIdentities with a file containing multiple identities — all are returned
+// and forwarded to age.Decrypt (supports multi-identity key rotation).
+func TestLoadIdentity_multiple_identities_returns_all(t *testing.T) {
 	id1 := newIdentity(t)
 	id2 := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -1273,17 +1275,28 @@ func TestLoadIdentity_multiple_identities_uses_first(t *testing.T) {
 	keyPath := filepath.Join(tmpDir, "multi.txt")
 	_ = os.WriteFile(keyPath, []byte(content), 0o600)
 
-	loaded, err := loadIdentity(keyPath)
+	loaded, err := loadIdentities(keyPath)
 	if err != nil {
-		t.Fatalf("loadIdentity(multi): %v", err)
+		t.Fatalf("loadIdentities(multi): %v", err)
 	}
-	loadedX, ok := loaded.(*age.X25519Identity)
+	if len(loaded) != 2 {
+		t.Fatalf("loadIdentities(multi) returned %d identities, want 2", len(loaded))
+	}
+	id1X, ok := loaded[0].(*age.X25519Identity)
 	if !ok {
-		t.Fatalf("expected *age.X25519Identity, got %T", loaded)
+		t.Fatalf("expected *age.X25519Identity, got %T", loaded[0])
 	}
-	if loadedX.Recipient().String() != id1.Recipient().String() {
-		t.Errorf("loadIdentity(multi) used wrong identity: got %q, want %q (first)",
-			loadedX.Recipient().String(), id1.Recipient().String())
+	id2X, ok := loaded[1].(*age.X25519Identity)
+	if !ok {
+		t.Fatalf("expected *age.X25519Identity, got %T", loaded[1])
+	}
+	if id1X.Recipient().String() != id1.Recipient().String() {
+		t.Errorf("loadIdentities(multi)[0] = %q, want %q (first)",
+			id1X.Recipient().String(), id1.Recipient().String())
+	}
+	if id2X.Recipient().String() != id2.Recipient().String() {
+		t.Errorf("loadIdentities(multi)[1] = %q, want %q (second)",
+			id2X.Recipient().String(), id2.Recipient().String())
 	}
 }
 
@@ -1305,8 +1318,13 @@ func TestDecryptAll_all_plaintext_env_files(t *testing.T) {
 	}
 }
 
-// decryptFile at exactly the 10 MB encrypted size limit — should be processed (not rejected).
-// Kills CONDITIONALS_BOUNDARY mutant at the `info.Size() > maxEncryptedSize` check.
+// decryptFile on a small valid encrypted file is accepted (not falsely
+// rejected by the 10 MB encrypted-input guard). After the cycle-3 streaming
+// change the guard is `len(data) > maxEncryptedSize` on the
+// io.LimitReader read in decryptFile — there is no info.Size() stat on the
+// encrypted path. The exact-10 MB boundary is impractical to pin with a real
+// age ciphertext (age rejects trailing padding); the over-cap side is covered
+// by TestDecryptAll_skips_oversized_encrypted_file and TestDecryptFile_status.
 func TestDecryptFile_at_exact_encrypted_size_limit(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -1474,9 +1492,9 @@ func TestLoadIdentity_file_with_only_comments_returns_error(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, err := loadIdentity(keyPath)
+	_, err := loadIdentities(keyPath)
 	if err == nil {
-		t.Fatal("loadIdentity(comments-only) = nil, want error")
+		t.Fatal("loadIdentities(comments-only) = nil, want error")
 	}
 }
 
@@ -1498,6 +1516,159 @@ func FuzzLoadIdentity(f *testing.F) {
 			t.Fatalf("write: %v", err)
 		}
 		// loadIdentity must not panic regardless of input.
-		_, _ = loadIdentity(keyPath)
+		_, _ = loadIdentities(keyPath)
 	})
+}
+
+// A file encrypted to the SECOND identity in the key file must decrypt when
+// both identities are passed — this is the multi-identity key-rotation path
+// (AGE_KEY_FILE documents "one identity per line"). The negative control
+// (only id1) confirms the file genuinely requires id2.
+func TestDecryptAll_decrypts_file_encrypted_to_second_identity(t *testing.T) {
+	id1 := newIdentity(t)
+	id2 := newIdentity(t)
+	tmpDir := t.TempDir()
+
+	original := []byte("ROTATED_KEY=rotated_value\n")
+	envPath := writeEncryptedEnv(t, tmpDir, "rotated.env", original, id2.Recipient())
+
+	// Sanity/negative control: id1 alone cannot decrypt an id2-encrypted file.
+	onlyID1, err := decryptAll(context.Background(), tmpDir, []age.Identity{id1})
+	if err != nil {
+		t.Fatalf("decryptAll(id1 only): %v", err)
+	}
+	if onlyID1.Decrypted != 0 || onlyID1.Failed != 1 {
+		t.Fatalf("id1 only: Decrypted=%d Failed=%d, want 0 and 1", onlyID1.Decrypted, onlyID1.Failed)
+	}
+
+	// File is still ciphertext after the failed pass; decrypt with both keys.
+	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{id1, id2})
+	if err != nil {
+		t.Fatalf("decryptAll(id1, id2): %v", err)
+	}
+	if result.Decrypted != 1 {
+		t.Fatalf("Decrypted = %d, want 1 (file encrypted to 2nd identity)", result.Decrypted)
+	}
+	got, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Errorf("decrypted content = %q, want %q", got, original)
+	}
+}
+
+// The Skipped counter must count non-age .env files (legitimate skips),
+// distinct from Failed (age-formatted files that could not be decrypted).
+func TestDecryptAll_counts_skipped_files(t *testing.T) {
+	identity := newIdentity(t)
+	tmpDir := t.TempDir()
+
+	// Two plaintext .env files — both should be Skipped, not Failed.
+	_ = os.WriteFile(filepath.Join(tmpDir, "plain1.env"), []byte("A=1\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "plain2.env"), []byte("B=2\n"), 0o644)
+	// One real encrypted .env — should be Decrypted.
+	writeEncryptedEnv(t, tmpDir, "enc.env", []byte("C=3\n"), identity.Recipient())
+
+	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity})
+	if err != nil {
+		t.Fatalf("decryptAll: %v", err)
+	}
+	if result.Skipped != 2 {
+		t.Errorf("Skipped = %d, want 2 (two plaintext .env files)", result.Skipped)
+	}
+	if result.Decrypted != 1 {
+		t.Errorf("Decrypted = %d, want 1", result.Decrypted)
+	}
+	if result.Failed != 0 {
+		t.Errorf("Failed = %d, want 0 (plaintext is skipped, not failed)", result.Failed)
+	}
+}
+
+// A directory the walk cannot read must increment WalkErrors (and not abort
+// the whole pass). Distinct from TestDecryptAll_handles_walk_error, which only
+// checks the decrypted count via the adapter.
+func TestDecryptAll_counts_walk_errors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows: permission-based walk errors unreliable")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("skipping as root: chmod bypass makes directory readable")
+	}
+
+	identity := newIdentity(t)
+	tmpDir := t.TempDir()
+
+	noReadDir := filepath.Join(tmpDir, "noaccess")
+	_ = os.MkdirAll(noReadDir, 0o755)
+	_ = os.WriteFile(filepath.Join(noReadDir, "secret.env"), []byte("data"), 0o644)
+	_ = os.Chmod(noReadDir, 0o000)
+	t.Cleanup(func() { _ = os.Chmod(noReadDir, 0o755) })
+
+	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity})
+	if err != nil {
+		t.Fatalf("decryptAll: %v", err)
+	}
+	if result.WalkErrors < 1 {
+		t.Errorf("WalkErrors = %d, want >= 1 (unreadable subdir)", result.WalkErrors)
+	}
+}
+
+func TestWarnIfNoFilesSeen_warns_only_when_no_files_seen(t *testing.T) {
+	tests := []struct {
+		name     string
+		result   decryptResult
+		wantWarn bool
+	}{
+		{name: "all zero warns", result: decryptResult{}, wantWarn: true},
+		{name: "decrypted nonzero is silent", result: decryptResult{Decrypted: 1}, wantWarn: false},
+		{name: "failed nonzero is silent", result: decryptResult{Failed: 1}, wantWarn: false},
+		{name: "skipped nonzero is silent", result: decryptResult{Skipped: 1}, wantWarn: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+			warnIfNoFilesSeen(tt.result, "/repo/homelab")
+			out := buf.String()
+			gotWarn := strings.Contains(out, "no .env files found")
+			if gotWarn != tt.wantWarn {
+				t.Errorf("warnIfNoFilesSeen(%+v) warn=%v, want %v (output=%q)", tt.result, gotWarn, tt.wantWarn, out)
+			}
+			if tt.wantWarn {
+				if !strings.Contains(out, "level=WARN") {
+					t.Errorf("warnIfNoFilesSeen(all zero) level missing WARN, got %q", out)
+				}
+				if !strings.Contains(out, "/repo/homelab") {
+					t.Errorf("warnIfNoFilesSeen(all zero) missing repo_root attr, got %q", out)
+				}
+			}
+		})
+	}
+}
+
+func TestLogDecryptResult_emits_all_counts(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	logDecryptResult("decryption complete", decryptResult{
+		Decrypted: 3, Failed: 2, Skipped: 5, WalkErrors: 1,
+	})
+
+	out := buf.String()
+	for _, want := range []string{
+		`msg="decryption complete"`,
+		"decrypted=3",
+		"failed=2",
+		"skipped=5",
+		"walk_errors=1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("logDecryptResult output missing %q, got %q", want, out)
+		}
+	}
 }
