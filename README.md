@@ -6,6 +6,8 @@
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: distroless static](https://img.shields.io/badge/base-distroless%2Fstatic-2496ED?logo=docker)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/docker-age/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/docker-age)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/coverage.json)](https://github.com/cplieger/docker-age/actions/workflows/coverage.yml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13202/badge)](https://www.bestpractices.dev/projects/13202)
 
 Decrypt [age](https://github.com/FiloSottile/age)-encrypted `.env` files at deploy time so your orchestrator can read them as plaintext.
 
