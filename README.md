@@ -1,13 +1,14 @@
 # docker-age
 
-[![CI](https://github.com/cplieger/docker-age/actions/workflows/ci.yaml/badge.svg)](https://github.com/cplieger/docker-age/actions/workflows/ci.yaml)
-[![GitHub release](https://img.shields.io/github/v/release/cplieger/docker-age)](https://github.com/cplieger/docker-age/releases)
 [![Image Size](https://ghcr-badge.egpl.dev/cplieger/docker-age/size)](https://github.com/cplieger/docker-age/pkgs/container/docker-age)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: distroless static](https://img.shields.io/badge/base-distroless%2Fstatic-2496ED?logo=docker)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/docker-age/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/docker-age)
-[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/coverage.json)](https://github.com/cplieger/docker-age/actions/workflows/coverage.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/cplieger/docker-age)](https://goreportcard.com/report/github.com/cplieger/docker-age)
+[![Test coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/coverage.json)](https://github.com/cplieger/docker-age/actions/workflows/coverage.yml)
+[![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/mutation.json)](https://github.com/cplieger/docker-age/issues?q=label%3Agremlins-tracker)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13202/badge)](https://www.bestpractices.dev/projects/13202)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/docker-age/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/docker-age)
+[![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/docker-age/releases)
 
 Decrypt [age](https://github.com/FiloSottile/age)-encrypted `.env` files at deploy time so your orchestrator can read them as plaintext.
 
