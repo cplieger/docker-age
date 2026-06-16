@@ -205,6 +205,10 @@ func TestIsOrphanTmpFile(t *testing.T) {
 		{name: "per-pid single counter", input: "app.env.tmp.12345", want: true},
 		{name: "per-pid pid dot counter", input: "app.env.tmp.12345.7", want: true},
 		{name: "bare dotenv with pid", input: ".env.tmp.99999", want: true},
+		{name: "bare dotenv simple counter", input: ".env.tmp.123", want: true},
+		{name: "bare dotenv pid dot counter", input: ".env.tmp.1.2", want: true},
+		{name: "prefixed single digit counter", input: "foo.env.tmp.9", want: true},
+		{name: "trailing double dot counter", input: ".env.tmp..", want: true},
 		{name: "plain env file not orphan", input: "app.env", want: false},
 		{name: "decrypted dotenv not orphan", input: ".env", want: false},
 		{name: "non env file", input: "config.txt", want: false},
@@ -212,6 +216,8 @@ func TestIsOrphanTmpFile(t *testing.T) {
 		{name: "non-digit suffix", input: "app.env.tmp.abc", want: false},
 		{name: "mixed digit and letter suffix", input: "app.env.tmp.12a", want: false},
 		{name: "envtmp without dot separator", input: ".env.tmpfoo", want: false},
+		{name: "envtmp single trailing letter", input: ".env.tmpX", want: false},
+		{name: "bare empty suffix after dot", input: ".env.tmp.", want: false},
 		{name: "envtmp missing leading dot", input: "envtmp", want: false},
 	}
 	for _, tc := range tests {

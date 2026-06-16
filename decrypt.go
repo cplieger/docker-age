@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -156,25 +157,16 @@ func sweepOrphanTmpFile(rootDir *os.Root, rel string, staleThreshold time.Durati
 	return true
 }
 
+// orphanTmpRe matches the orphan tmp-file name shapes produced by decryptFile:
+// the legacy bare ".env.tmp" and the PID-keyed ".env.tmp.<pid>.<counter>"
+// (a non-empty run of digits and dots). The match is end-anchored, mirroring
+// the original suffix-based check; a prefixed name (e.g. "app.env.tmp.9") still
+// matches because only the tail is constrained.
+var orphanTmpRe = regexp.MustCompile(`\.env\.tmp(\.[0-9.]+)?$`)
+
 // isOrphanTmpFile reports whether the file name matches the orphan tmp pattern.
 func isOrphanTmpFile(name string) bool {
-	if strings.HasSuffix(name, ".env.tmp") {
-		return true
-	}
-	idx := strings.LastIndex(name, ".env.tmp.")
-	if idx < 0 {
-		return false
-	}
-	suffix := name[idx+len(".env.tmp."):]
-	if suffix == "" {
-		return false
-	}
-	for _, r := range suffix {
-		if (r < '0' || r > '9') && r != '.' {
-			return false
-		}
-	}
-	return true
+	return orphanTmpRe.MatchString(name)
 }
 
 // decryptAll walks root for .env files, decrypting any age-encrypted ones
