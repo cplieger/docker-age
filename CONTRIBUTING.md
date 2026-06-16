@@ -9,7 +9,7 @@ fallback applies; this file covers what's particular to the code here.
 A single static Go binary (`age-decrypt`) shipped on
 `gcr.io/distroless/static:nonroot`. It walks a mounted tree,
 decrypts every age-encrypted `.env` in place, and skips everything else.
-The module path is `github.com/cplieger/age-decrypt` even though the repo
+The module path is `github.com/cplieger/age-decrypt/v2` even though the repo
 and image are named `docker-age` — the binary name, not the repo name, is
 the canonical identifier.
 
@@ -23,7 +23,7 @@ Flat `package main`, one concern per file:
   _before_ `parseConfig` runs, because the probe must work without
   `AGE_KEY_FILE` set.
 - `config.go` — env-var parsing (`AGE_KEY_FILE`, `AGE_REPO_ROOT`) and mode
-  selection from `os.Args[1]` (`decrypt` → subcommand, `health` → probe,
+  selection from `os.Args[1]` (`decrypt` → decrypt mode with `--ext`/path/pipe parsing, `health` → probe,
   empty → server).
 - `identity.go` — `loadIdentities` loads **all** age identities from the key
   file, returning `[]age.Identity` (the interface, not a concrete key type) so
@@ -51,20 +51,20 @@ before touching `decrypt.go`.
   orphan sweep. Keep the per-call uniqueness.
 - **`decryptFile` is tri-state, and skips are not failures.** It returns
   `fileSkipped` (not age-formatted — legitimate, logged at debug),
-  `fileDecrypted`, or `fileFailed`. In **subcommand mode** (`runSubcommand`,
-  the `decrypt` argument) the process exits non-zero when
+  `fileDecrypted`, or `fileFailed`. In **decrypt mode** (`runDecrypt`,
+  the `decrypt` subcommand) the process exits non-zero when
   `result.Failed > 0` **or** when the repo root itself is unreadable: a
   root-level `WalkDir` error (e.g. a stale mount, `readdirent /repo: no such
   file or directory`) is fatal, so a stale `/repo` fails loudly instead of
   reporting a clean `decrypted=0` / exit 0. Per-subdirectory walk errors stay
-  non-fatal (logged, the walk continues). A tree of plaintext `.env` files —
+  non-fatal (logged, the walk continues). A tree of plaintext files (no age headers) —
   or a legitimately empty tree — is still a clean run.
 - **Server mode never exits on a startup decrypt failure.** `runServer`
   performs a startup decrypt and sets the health marker via
   `startupHealthy(result, err)` (`err == nil && result.Failed == 0`): a hard
   error (unreadable repo root) _and_ any per-file failure both mark the
   container **unhealthy but keep it running**. The container's role is to be a
-  long-lived `docker exec age /age-decrypt decrypt` target for the deploy;
+  long-lived `docker exec age /age-decrypt decrypt --ext .env` target for the deploy;
   exiting on startup would crash-loop it under `restart: unless-stopped` and
   remove the exec target precisely when a deploy needs it (the failure is
   usually a transient deploy-time mount race a later exec or a restart

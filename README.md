@@ -16,10 +16,14 @@ Decrypt [age](https://github.com/FiloSottile/age)-encrypted `.env` files at depl
 
 Walks a mounted directory tree, finds every `.env` file that's age-encrypted (binary or armored), and rewrites it in place with its decrypted plaintext. Files that aren't age-encrypted are left untouched. Designed to run as a `pre_deploy` step before `docker compose up` reads the `.env` files.
 
-The `age-decrypt` binary is a single static Go executable on `gcr.io/distroless/static:nonroot`. It supports two subcommands:
+The `age-decrypt` binary is a single static Go executable on `gcr.io/distroless/static:nonroot`:
 
-- `decrypt` — walk the tree, decrypt every age-encrypted `.env`; exit 0 on success, non-zero if any file fails to decrypt or the repo root is unreadable (e.g. a stale mount)
-- `health` — file-based health probe (writes `/tmp/.healthy` on successful decrypt; reads it back to report status)
+- `decrypt --ext .env` — decrypt every `.env` file in `AGE_REPO_ROOT` (the deploy use case)
+- `decrypt /path` — decrypt a specific file or directory tree
+- `decrypt -` — pipe: stdin ciphertext in, stdout plaintext out
+- `health` — file-based health probe for Docker `HEALTHCHECK`
+
+The `decrypt` subcommand always requires you to say **what** to decrypt (an extension filter, a path, or `-`). Server mode (no subcommand) is the always-on container entrypoint — it idles and serves as a `docker exec` target; it does not decrypt anything on its own.
 
 ### Why this design
 
@@ -97,7 +101,7 @@ docker run --rm \
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AGE_KEY_FILE` | Absolute path to the age identity file (one identity per line; all are tried, so key rotation works) | _required_ (example: `/age/keys.txt`) |
-| `AGE_REPO_ROOT` | Absolute path to the tree to walk for `.env` files | `/repo` |
+| `AGE_REPO_ROOT` | Absolute path to the tree to walk for encrypted files (defaults to filtering `.env` in server mode; pass `--ext` to override) | `/repo` |
 
 ### Volumes
 
@@ -108,10 +112,28 @@ docker run --rm \
 
 ### Subcommands
 
-| Command | Description |
-|---------|-------------|
-| `decrypt` | Walk `AGE_REPO_ROOT`, decrypt every age-encrypted `.env` in place. Exit 0 on success; non-zero if any file fails to decrypt or the repo root is unreadable (stale mount). |
-| `health` | Read the `/tmp/.healthy` marker — exit 0 if healthy, 1 if not. For Docker `HEALTHCHECK`. |
+```
+/age-decrypt decrypt [--ext <suffix>]... [<path>...]
+/age-decrypt decrypt -
+/age-decrypt health
+```
+
+The `decrypt` subcommand requires **at least one** of: `--ext`, a target path, or `-`. Calling `decrypt` with no arguments is an error (nothing to do).
+
+| Input | Behavior |
+|-------|----------|
+| `decrypt --ext .env` | Walk `AGE_REPO_ROOT`, decrypt only files ending in `.env` |
+| `decrypt --ext .env --ext .yaml` | Walk `AGE_REPO_ROOT`, decrypt files ending in `.env` OR `.yaml` |
+| `decrypt --ext .env /path/to/dir` | Walk the given directory (not `AGE_REPO_ROOT`), filter by `.env` |
+| `decrypt /path/to/file.env` | Decrypt that one file in place (no extension filter — explicit target) |
+| `decrypt /path/to/dir` | Walk that directory, decrypt **all** age-formatted files (no filter) |
+| `decrypt -` | Pipe: read ciphertext from stdin, write plaintext to stdout |
+| `decrypt` (bare, no args) | **Error** (exit 1) — you must specify what to decrypt |
+| `health` | Read `/tmp/.healthy` marker — exit 0 if healthy, 1 if not |
+
+**`--ext` behavior:** when provided, only files whose name ends with the suffix are candidates. When omitted with an explicit path target, all age-formatted files in the target are decrypted. The dot is auto-prefixed if missing (`--ext env` = `--ext .env`).
+
+**Server mode** (no subcommand, the container's PID 1 entrypoint): starts up, marks itself healthy, and **idles**. No startup decrypt — all decryption is triggered explicitly via `docker exec age /age-decrypt decrypt --ext .env` (or any other `decrypt` invocation). The container stays alive as a long-lived exec target; the health marker is always healthy while the process is running. Use `restart: unless-stopped` in compose so it recovers from OOM/crashes.
 
 ## File-format detection
 

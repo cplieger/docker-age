@@ -88,7 +88,7 @@ func writeEncryptedEnv(t *testing.T, dir, name string, content []byte, recipient
 // directly and use the decryptResult struct fields. Uses a background
 // context; tests that need cancellation should call decryptAll directly.
 func decryptAllCount(root string, identity age.Identity) (int, error) {
-	res, err := decryptAll(context.Background(), root, []age.Identity{identity})
+	res, err := decryptAll(context.Background(), root, []age.Identity{identity}, nil)
 	return res.Decrypted, err
 }
 
@@ -820,7 +820,7 @@ func TestDecryptAll_respects_context_cancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	result, err := decryptAll(ctx, tmpDir, []age.Identity{identity})
+	result, err := decryptAll(ctx, tmpDir, []age.Identity{identity}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll with canceled ctx: %v", err)
 	}
@@ -845,7 +845,7 @@ func TestDecryptAll_counts_failed_files(t *testing.T) {
 	// One plaintext .env — should be skipped (not counted as failed).
 	_ = os.WriteFile(filepath.Join(tmpDir, "plain.env"), []byte("PLAIN=val\n"), 0o644)
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{decryptID})
+	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{decryptID}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -885,7 +885,7 @@ func TestDecryptAll_sweeps_orphan_tmp_files(t *testing.T) {
 	original := []byte("NORMAL_KEY=value\n")
 	writeEncryptedEnv(t, tmpDir, "normal.env", original, identity.Recipient())
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity})
+	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -909,9 +909,9 @@ func TestRunSubcommand_returns_zero_on_success(t *testing.T) {
 	original := []byte("SUB_KEY=value\n")
 	writeEncryptedEnv(t, tmpDir, "app.env", original, identity.Recipient())
 
-	code := runSubcommand(tmpDir, []age.Identity{identity})
+	code := runDecrypt(&config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{identity})
 	if code != 0 {
-		t.Errorf("runSubcommand(valid) = %d, want 0", code)
+		t.Errorf("runDecrypt(valid) = %d, want 0", code)
 	}
 }
 
@@ -923,9 +923,9 @@ func TestRunSubcommand_returns_one_on_decrypt_failure(t *testing.T) {
 	// Encrypt with one key, decrypt with another — produces Failed > 0.
 	writeEncryptedEnv(t, tmpDir, "secret.env", []byte("S=v\n"), encryptID.Recipient())
 
-	code := runSubcommand(tmpDir, []age.Identity{decryptID})
+	code := runDecrypt(&config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{decryptID})
 	if code != 1 {
-		t.Errorf("runSubcommand(wrong key) = %d, want 1 (Failed > 0)", code)
+		t.Errorf("runDecrypt(wrong key) = %d, want 1 (Failed > 0)", code)
 	}
 }
 
@@ -933,67 +933,20 @@ func TestRunSubcommand_returns_one_on_invalid_root(t *testing.T) {
 	identity := newIdentity(t)
 	bogusRoot := filepath.Join(t.TempDir(), "does-not-exist")
 
-	code := runSubcommand(bogusRoot, []age.Identity{identity})
+	code := runDecrypt(&config{RepoRoot: bogusRoot, Extensions: []string{".env"}}, []age.Identity{identity})
 	if code != 1 {
-		t.Errorf("runSubcommand(invalid root) = %d, want 1", code)
+		t.Errorf("runDecrypt(invalid root) = %d, want 1", code)
 	}
 }
 
-// --- Unit tests: runServer / startupHealthy ---
+// --- Unit tests: runServer (idle + signal) ---
 
-func TestStartupHealthy(t *testing.T) {
-	tests := []struct {
-		err    error
-		name   string
-		result decryptResult
-		want   bool
-	}{
-		{name: "clean run is healthy", result: decryptResult{Decrypted: 3, Failed: 0}, err: nil, want: true},
-		{name: "empty clean run is healthy", result: decryptResult{}, err: nil, want: true},
-		{name: "per-file failure is unhealthy", result: decryptResult{Decrypted: 2, Failed: 1}, err: nil, want: false},
-		{name: "hard error is unhealthy", result: decryptResult{}, err: errors.New("open root: stale mount"), want: false},
-		{name: "hard error with partial counts is unhealthy", result: decryptResult{Decrypted: 1, Failed: 0}, err: errors.New("walk root"), want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := startupHealthy(tt.result, tt.err); got != tt.want {
-				t.Errorf("startupHealthy(%+v, %v) = %v, want %v", tt.result, tt.err, got, tt.want)
-			}
-		})
-	}
-}
-
-// A startup decrypt failure (e.g. a stale or not-yet-cloned repo mount) must
-// NOT exit the server: the container has to stay alive as a `docker exec`
-// target for the deploy. Regression guard — server mode previously returned 1
-// here, crash-looping the container under restart: unless-stopped.
-func TestRunServer_stays_alive_on_startup_error(t *testing.T) {
-	identity := newIdentity(t)
-	bogusRoot := filepath.Join(t.TempDir(), "does-not-exist")
-	markerPath := filepath.Join(t.TempDir(), ".healthy")
-
-	// Pre-cancelled context so the post-decrypt wait returns immediately.
+func TestRunServer_exits_zero_on_signal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	code := runServer(ctx, bogusRoot, markerPath, []age.Identity{identity})
+	cancel() // immediate signal
+	code := runServer(ctx)
 	if code != 0 {
-		t.Errorf("runServer(startup error) = %d, want 0 (must stay alive, not crash-loop)", code)
-	}
-}
-
-func TestRunServer_returns_zero_on_clean_shutdown(t *testing.T) {
-	identity := newIdentity(t)
-	repoDir := t.TempDir()
-	writeEncryptedEnv(t, repoDir, "app.env", []byte("K=v\n"), identity.Recipient())
-	markerPath := filepath.Join(t.TempDir(), ".healthy")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	code := runServer(ctx, repoDir, markerPath, []age.Identity{identity})
-	if code != 0 {
-		t.Errorf("runServer(clean shutdown) = %d, want 0", code)
+		t.Errorf("runServer(canceled ctx) = %d, want 0", code)
 	}
 }
 
@@ -1533,7 +1486,7 @@ func TestDecryptAll_decrypts_file_encrypted_to_second_identity(t *testing.T) {
 	envPath := writeEncryptedEnv(t, tmpDir, "rotated.env", original, id2.Recipient())
 
 	// Sanity/negative control: id1 alone cannot decrypt an id2-encrypted file.
-	onlyID1, err := decryptAll(context.Background(), tmpDir, []age.Identity{id1})
+	onlyID1, err := decryptAll(context.Background(), tmpDir, []age.Identity{id1}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll(id1 only): %v", err)
 	}
@@ -1542,7 +1495,7 @@ func TestDecryptAll_decrypts_file_encrypted_to_second_identity(t *testing.T) {
 	}
 
 	// File is still ciphertext after the failed pass; decrypt with both keys.
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{id1, id2})
+	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{id1, id2}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll(id1, id2): %v", err)
 	}
@@ -1570,7 +1523,7 @@ func TestDecryptAll_counts_skipped_files(t *testing.T) {
 	// One real encrypted .env — should be Decrypted.
 	writeEncryptedEnv(t, tmpDir, "enc.env", []byte("C=3\n"), identity.Recipient())
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity})
+	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -1605,7 +1558,7 @@ func TestDecryptAll_counts_walk_errors(t *testing.T) {
 	_ = os.Chmod(noReadDir, 0o000)
 	t.Cleanup(func() { _ = os.Chmod(noReadDir, 0o755) })
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity})
+	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -1633,7 +1586,7 @@ func TestWarnIfNoFilesSeen_warns_only_when_no_files_seen(t *testing.T) {
 			t.Cleanup(func() { slog.SetDefault(prev) })
 			warnIfNoFilesSeen(tt.result, "/repo/homelab")
 			out := buf.String()
-			gotWarn := strings.Contains(out, "no .env files found")
+			gotWarn := strings.Contains(out, "no matching files found")
 			if gotWarn != tt.wantWarn {
 				t.Errorf("warnIfNoFilesSeen(%+v) warn=%v, want %v (output=%q)", tt.result, gotWarn, tt.wantWarn, out)
 			}
