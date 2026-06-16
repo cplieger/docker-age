@@ -169,12 +169,14 @@ func isOrphanTmpFile(name string) bool {
 	return orphanTmpRe.MatchString(name)
 }
 
-// decryptAll walks root for .env files, decrypting any age-encrypted ones
-// atomically in place. It also sweeps orphaned .env.tmp files in the same
-// pass, eliminating a redundant full tree traversal.
+// decryptAll walks root, decrypting any age-encrypted files atomically in
+// place. When extensions is non-empty, only files matching one of the given
+// suffixes are considered; when empty, all regular files are candidates
+// (skipped by format detection if not age-encrypted). It also sweeps
+// orphaned .env.tmp files in the same pass.
 // Returns per-outcome counts and an error only when the root itself cannot
 // be opened.
-func decryptAll(ctx context.Context, root string, identities []age.Identity) (decryptResult, error) {
+func decryptAll(ctx context.Context, root string, identities []age.Identity, extensions []string) (decryptResult, error) {
 	rootDir, err := os.OpenRoot(root)
 	if err != nil {
 		return decryptResult{}, fmt.Errorf("open root: %w", err)
@@ -218,9 +220,18 @@ func decryptAll(ctx context.Context, root string, identities []age.Identity) (de
 			return nil
 		}
 
-		// Process .env files for decryption.
-		if !strings.HasSuffix(name, ".env") {
-			return nil
+		// Process files for decryption (extension filter or all).
+		if len(extensions) > 0 {
+			matched := false
+			for _, ext := range extensions {
+				if strings.HasSuffix(name, ext) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return nil
+			}
 		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {

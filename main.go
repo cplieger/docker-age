@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"filippo.io/age"
@@ -25,7 +26,6 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Tag every subsequent log line with the invocation mode.
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)).With("mode", cfg.Mode))
 
 	identities, err := loadIdentities(cfg.KeyFile)
@@ -34,97 +34,121 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("configuration loaded", "repo_root", cfg.RepoRoot)
-
-	if cfg.Mode == modeSubcommand {
-		os.Exit(runSubcommand(cfg.RepoRoot, identities))
+	if cfg.Mode == modeDecrypt {
+		os.Exit(runDecrypt(&cfg, identities))
 	}
 
+	// Server mode (default, no subcommand): idle as PID 1, serve as a
+	// long-lived `docker exec` target. No startup decrypt — all decryption
+	// is triggered explicitly via exec.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := runServer(ctx, cfg.RepoRoot, health.DefaultPath, identities)
+	code := runServer(ctx)
 	stop()
 	os.Exit(code)
 }
 
-// runSubcommand performs a single decrypt pass. Returns a non-zero exit
-// code if any age-formatted file failed.
-func runSubcommand(repoRoot string, identities []age.Identity) int {
-	slog.Info("starting decrypt subcommand", "repo_root", repoRoot)
-	result, err := decryptAll(context.Background(), repoRoot, identities)
-	if err != nil {
-		slog.Error("decryption failed", "error", err)
-		return 1
-	}
-	logDecryptResult("decryption complete", result)
-	warnIfNoFilesSeen(result, repoRoot)
-	if result.Failed > 0 {
-		slog.Warn("decryption completed with failures; some .env files remain ciphertext",
-			"failed", result.Failed)
-		return 1
-	}
-	return 0
-}
-
-// runServer performs a startup decrypt, sets the health marker according to
-// the outcome, and waits for SIGINT/SIGTERM.
-//
-// A startup decrypt failure — a hard error (e.g. a stale or not-yet-cloned
-// repo mount makes the root unreadable) or any per-file failure — marks the
-// container UNHEALTHY but does NOT exit. The age container's role is to be a
-// long-lived `docker exec age /age-decrypt decrypt` target for the deploy;
-// exiting on a startup failure would crash-loop the container under
-// `restart: unless-stopped` and remove the exec target precisely when the
-// deploy needs it (the failure is typically a transient deploy-time mount
-// race that a later exec or a container restart recovers from). The loud,
-// deploy-blocking signal lives in runSubcommand, which still exits non-zero;
-// server mode surfaces the problem through the health marker instead.
-func runServer(ctx context.Context, repoRoot, markerPath string, identities []age.Identity) int {
-	marker := health.NewMarker(markerPath)
+// runServer idles as PID 1 with a healthy marker, waiting for SIGINT/SIGTERM.
+// All decrypt work happens via `docker exec` into this container.
+func runServer(ctx context.Context) int {
+	marker := health.NewMarker(health.DefaultPath)
 	defer marker.Cleanup()
-	marker.Set(false)
+	marker.Set(true)
 
-	result, err := decryptAll(ctx, repoRoot, identities)
-	if err != nil {
-		slog.Error("startup decryption failed; staying up and marking unhealthy", "error", err)
-	} else {
-		logDecryptResult("startup decryption complete", result)
-		warnIfNoFilesSeen(result, repoRoot)
-		if result.Failed > 0 {
-			slog.Warn("startup decryption complete with failures; marking unhealthy",
-				"failed", result.Failed)
-		}
-	}
-	marker.Set(startupHealthy(result, err))
-
-	slog.Info("ready, waiting for signals")
+	slog.Info("ready, waiting for signals (decrypt via docker exec)")
 	<-ctx.Done()
 
 	slog.Info("shutting down", "cause", context.Cause(ctx))
 	return 0
 }
 
-// startupHealthy reports whether a startup decrypt result should mark the
-// server healthy. Healthy requires both no hard error and zero per-file
-// failures; any failure marks unhealthy. The container stays alive either
-// way (see runServer).
-func startupHealthy(result decryptResult, err error) bool {
-	return err == nil && result.Failed == 0
+// runDecrypt handles all decrypt invocations:
+//   - no targets AND no --ext: error (you must say what to decrypt)
+//   - target "-": stdin/stdout pipe (single file, no disk I/O)
+//   - target is a file: decrypt that one file in place
+//   - target is a dir: walk that subtree (filtered by --ext if set)
+//   - --ext with no targets: walk RepoRoot filtered by the given extensions
+func runDecrypt(cfg *config, identities []age.Identity) int {
+	// Pipe mode: stdin → decrypt → stdout
+	if len(cfg.Targets) == 1 && cfg.Targets[0] == "-" {
+		return runDecryptStdin(identities)
+	}
+
+	// Must specify what to decrypt.
+	extensions := cfg.Extensions
+	if len(extensions) == 0 && len(cfg.Targets) == 0 {
+		slog.Error("decrypt requires at least one of: --ext, a target path, or '-' for stdin")
+		return 1
+	}
+
+	// Determine walk roots
+	roots := cfg.Targets
+	if len(roots) == 0 {
+		roots = []string{cfg.RepoRoot}
+	}
+
+	ctx := context.Background()
+	var totalResult decryptResult
+	for _, root := range roots {
+		info, err := os.Stat(root)
+		if err != nil {
+			slog.Error("target not accessible", "path", root, "error", err)
+			return 1
+		}
+		if !info.IsDir() {
+			status := decryptSingleFile(ctx, root, identities)
+			switch status {
+			case fileDecrypted:
+				totalResult.Decrypted++
+			case fileFailed:
+				totalResult.Failed++
+			case fileSkipped:
+				totalResult.Skipped++
+			}
+			continue
+		}
+		result, err := decryptAll(ctx, root, identities, extensions)
+		if err != nil {
+			slog.Error("decryption failed", "root", root, "error", err)
+			return 1
+		}
+		totalResult.Decrypted += result.Decrypted
+		totalResult.Failed += result.Failed
+		totalResult.Skipped += result.Skipped
+		totalResult.WalkErrors += result.WalkErrors
+	}
+
+	logDecryptResult("decryption complete", totalResult)
+	if len(cfg.Targets) == 0 {
+		warnIfNoFilesSeen(totalResult, cfg.RepoRoot)
+	}
+	if totalResult.Failed > 0 {
+		slog.Warn("decryption completed with failures", "failed", totalResult.Failed)
+		return 1
+	}
+	return 0
 }
 
-// logDecryptResult emits a completion log line with the per-outcome
-// counts from a decrypt pass under the given message.
+// decryptSingleFile decrypts one explicitly-named file in place.
+func decryptSingleFile(ctx context.Context, path string, identities []age.Identity) fileStatus {
+	dir := filepath.Dir(path)
+	rootDir, err := os.OpenRoot(dir)
+	if err != nil {
+		slog.Error("cannot open parent dir", "path", path, "error", err)
+		return fileFailed
+	}
+	defer func() { _ = rootDir.Close() }()
+	return decryptFile(ctx, rootDir, filepath.Base(path), identities)
+}
+
 func logDecryptResult(msg string, result decryptResult) {
 	slog.Info(msg,
 		"decrypted", result.Decrypted, "failed", result.Failed,
 		"skipped", result.Skipped, "walk_errors", result.WalkErrors)
 }
 
-// warnIfNoFilesSeen emits the operator hint when a decrypt pass saw no
-// .env files at all (decrypted, failed, and skipped all zero), which
-// usually means a stale mount or a misconfigured AGE_REPO_ROOT.
 func warnIfNoFilesSeen(result decryptResult, repoRoot string) {
 	if result.Decrypted == 0 && result.Failed == 0 && result.Skipped == 0 {
-		slog.Warn("no .env files found under repo root; check AGE_REPO_ROOT and that the repo mount is current",
+		slog.Warn("no matching files found under repo root; check AGE_REPO_ROOT and the mount",
 			"repo_root", repoRoot)
 	}
 }

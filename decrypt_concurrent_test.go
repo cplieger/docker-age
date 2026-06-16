@@ -53,7 +53,7 @@ func TestDecryptAll_concurrent_safe(t *testing.T) {
 			defer wg.Done()
 			// Each goroutine does its own full pass over the tree — same as
 			// each stack's pre_deploy in the real topology.
-			res, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity})
+			res, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, nil)
 			if err != nil {
 				errCh <- fmt.Errorf("decryptAll returned error: %w", err)
 				return
@@ -112,7 +112,7 @@ func TestDecryptAll_sweep_preserves_young_peer_tmps(t *testing.T) {
 		t.Fatalf("write peer tmp: %v", err)
 	}
 
-	if _, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}); err != nil {
+	if _, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, nil); err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
 
@@ -137,7 +137,7 @@ func TestDecryptAll_sweep_removes_stale_per_pid_tmps(t *testing.T) {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	if _, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}); err != nil {
+	if _, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, nil); err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
 
