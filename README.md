@@ -10,11 +10,11 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/docker-age/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/docker-age)
 [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/docker-age/releases)
 
-Decrypt [age](https://github.com/FiloSottile/age)-encrypted `.env` files at deploy time so your orchestrator can read them as plaintext.
+Decrypt [age](https://github.com/FiloSottile/age)-encrypted files in place at deploy time so your orchestrator can read them as plaintext — `.env` files, any other config, or a single file piped through stdin/stdout.
 
 ## What it does
 
-Walks a mounted directory tree, finds every `.env` file that's age-encrypted (binary or armored), and rewrites it in place with its decrypted plaintext. Files that aren't age-encrypted are left untouched. Designed to run as a `pre_deploy` step before `docker compose up` reads the `.env` files.
+Walks a mounted directory tree (or a single file you name), finds everything that's age-encrypted (binary or armored), and rewrites it in place with its decrypted plaintext. Files that aren't age-encrypted are left untouched (idempotent). An `--ext` filter narrows a walk by suffix (e.g. `--ext .env`); a `-` target switches to a stdin→stdout pipe for a single file. Designed to run as a `pre_deploy` step before `docker compose up` reads the files.
 
 The `age-decrypt` binary is a single static Go executable on `gcr.io/distroless/static:nonroot`:
 
@@ -49,9 +49,10 @@ The expected workflow is encryption-at-rest in git, decryption at deploy:
    ```
 
 2. Commit `apps/myservice/.env` (encrypted, ASCII-armored) to git. `.env.dec` stays local.
-3. On each server, run `age-decrypt` as an always-on decryptor. It does one
-   decrypt pass at startup, then stays up so your deploy can trigger a fresh
-   pass before the stack starts with `docker exec age /age-decrypt decrypt`:
+3. On each server, run `age-decrypt` as an always-on container. It idles as a
+   long-lived `docker exec` target and does **not** decrypt anything on its own.
+   Your deploy triggers a fresh pass before the stack starts with
+   `docker exec age /age-decrypt decrypt --ext .env`:
 
 ```yaml
 services:
@@ -63,9 +64,10 @@ services:
     environment:
       # Required: path to the age identity file (one identity per line).
       AGE_KEY_FILE: "/age/keys.txt"
-      # AGE_REPO_ROOT defaults to /repo (the tree walked for *.env files). Set it
-      # only to target a SUBDIRECTORY of /repo — see the note below on re-cloning
-      # orchestrators. A tree (or folder of many repos) mounted at /repo is fine as-is.
+      # AGE_REPO_ROOT defaults to /repo (the tree `decrypt` walks when no path is
+      # given). Set it only to target a SUBDIRECTORY of /repo — see the note below
+      # on re-cloning orchestrators. A tree (or folder of many repos) mounted at
+      # /repo is fine as-is.
 
     volumes:
       - "/path/to/age-keys:/age:ro"  # directory with the age identity (keys.txt, mode 0600)
@@ -75,7 +77,7 @@ services:
 Trigger a decrypt pass on demand (no restart needed):
 
 ```bash
-docker exec age /age-decrypt decrypt
+docker exec age /age-decrypt decrypt --ext .env
 ```
 
 > **Re-cloning orchestrators (e.g. Komodo):** if your deploy tool replaces the
@@ -91,7 +93,7 @@ docker run --rm \
   -e AGE_KEY_FILE=/age/keys.txt \
   -v $PWD/age-keys:/age:ro \
   -v $PWD/repo:/repo \
-  ghcr.io/cplieger/docker-age:latest decrypt
+  ghcr.io/cplieger/docker-age:latest decrypt --ext .env
 ```
 
 ## Configuration reference
@@ -101,14 +103,14 @@ docker run --rm \
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AGE_KEY_FILE` | Absolute path to the age identity file (one identity per line; all are tried, so key rotation works) | _required_ (example: `/age/keys.txt`) |
-| `AGE_REPO_ROOT` | Absolute path to the tree to walk for encrypted files (defaults to filtering `.env` in server mode; pass `--ext` to override) | `/repo` |
+| `AGE_REPO_ROOT` | Absolute path to the tree `decrypt` walks when no target path is given | `/repo` |
 
 ### Volumes
 
 | Mount | Description |
 |-------|-------------|
 | `/age` | Directory containing your age identity (`keys.txt`, mode 0600). Mount read-only. |
-| `/repo` | Repository tree containing `.env` files to decrypt in place. |
+| `/repo` | Repository tree containing the files to decrypt in place. |
 
 ### Subcommands
 
@@ -137,17 +139,17 @@ The `decrypt` subcommand requires **at least one** of: `--ext`, a target path, o
 
 ## File-format detection
 
-`.env` files are inspected by their first bytes:
+Each candidate file is inspected by its first bytes:
 
 - **Armored age** (`-----BEGIN AGE ENCRYPTED FILE-----`) — decrypted via `age/armor`
 - **Binary age** (`age-encryption.org/v1`) — decrypted directly
 - **Anything else** — treated as already-plaintext and skipped silently
 
-This means you can mix encrypted and plaintext `.env` files in the same tree, and re-running `decrypt` is idempotent (a previously-decrypted file will be skipped on the next pass).
+This means you can mix encrypted and plaintext files in the same tree, and re-running `decrypt` is idempotent (a previously-decrypted file will be skipped on the next pass).
 
 ## Healthcheck
 
-`age-decrypt health` reads `/tmp/.healthy`. The marker is written when the most recent `decrypt` run completed successfully, and removed (or left unset) if a run failed — in **server mode** the marker is set only when every file decrypted cleanly (any failure, including an unreadable repo root, reports unhealthy). Server mode never exits on a startup decrypt failure: it stays running and marks itself unhealthy, so it remains a valid `docker exec age /age-decrypt decrypt` target (exiting would crash-loop the container under `restart: unless-stopped`). The loud, deploy-blocking signal is the non-zero exit of the one-shot `decrypt` subcommand. The baked healthcheck targets the long-running server, so the always-on setup above uses it as-is. If you instead run a one-shot `decrypt` container (the `docker run --rm` form above), disable the healthcheck (`healthcheck: {disable: true}` in compose) since the one-shot exits without ever writing the marker. The standard distroless `HEALTHCHECK` uses CMD form (no shell needed):
+`age-decrypt health` reads `/tmp/.healthy`. In **server mode** the marker is set healthy the moment the container starts (it just idles — there is no startup action that can fail) and stays healthy for as long as the process is alive; it is removed on shutdown. So the marker reflects process **liveness** — it lets Docker detect and restart a crashed server — **not** decrypt outcome. A `decrypt` invocation does not touch the marker; its success or failure is reported by its **exit code** (non-zero on any failure, including an unreadable repo root). That non-zero exit is the loud, deploy-blocking signal — wire your `pre_deploy` step to fail on it. The baked healthcheck targets the long-running server, so the always-on setup above uses it as-is. If you instead run a one-shot `decrypt` container (the `docker run --rm` form above), disable the healthcheck (`healthcheck: {disable: true}` in compose) since the one-shot exits without ever running the server that writes the marker. The standard distroless `HEALTHCHECK` uses CMD form (no shell needed):
 
 ```dockerfile
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
