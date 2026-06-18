@@ -19,14 +19,14 @@ and never exposes plaintext beyond the decrypted file.
 
 ## Threats and mitigations
 
-| Threat | Mitigation | Evidence |
-|---|---|---|
-| Symlink attack redirecting a write outside the target dir | symlink-safe traversal via `os.OpenRoot` (Go 1.24+) | `main.go`, decrypt path tests |
-| Path traversal in file selection | scoped, validated paths; decrypts only matched files | `identity.go`, `decrypt.go` |
-| Malformed/hostile ciphertext crashing the decryptor | hardened decode under fuzz; bounded reads | `main_test.go`, fuzz target |
-| Resource exhaustion (huge inputs) | bounded `io.LimitReader` sizes | source review |
-| Concurrent deploy races corrupting files | concurrency-safe in-place rewrite | tests |
-| Plaintext leakage | plaintext only written to the decrypted file; nothing logged | source review |
+| Threat                                                    | Mitigation                                                   | Evidence                      |
+| --------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------- |
+| Symlink attack redirecting a write outside the target dir | symlink-safe traversal via `os.OpenRoot` (Go 1.24+)          | `main.go`, decrypt path tests |
+| Path traversal in file selection                          | scoped, validated paths; decrypts only matched files         | `identity.go`, `decrypt.go`   |
+| Malformed/hostile ciphertext crashing the decryptor       | hardened decode under fuzz; bounded reads                    | `main_test.go`, fuzz target   |
+| Resource exhaustion (huge inputs)                         | bounded `io.LimitReader` sizes                               | source review                 |
+| Concurrent deploy races corrupting files                  | concurrency-safe in-place rewrite                            | tests                         |
+| Plaintext leakage                                         | plaintext only written to the decrypted file; nothing logged | source review                 |
 
 ## Cryptography
 

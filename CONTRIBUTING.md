@@ -55,7 +55,7 @@ before touching `decrypt.go`.
   the `decrypt` subcommand) the process exits non-zero when
   `result.Failed > 0` **or** when the repo root itself is unreadable: a
   root-level `WalkDir` error (e.g. a stale mount, `readdirent /repo: no such
-  file or directory`) is fatal, so a stale `/repo` fails loudly instead of
+file or directory`) is fatal, so a stale `/repo` fails loudly instead of
   reporting a clean `decrypted=0` / exit 0. Per-subdirectory walk errors stay
   non-fatal (logged, the walk continues). A tree of plaintext files (no age headers) —
   or a legitimately empty tree — is still a clean run.
