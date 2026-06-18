@@ -100,17 +100,17 @@ docker run --rm \
 
 ### Environment variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `AGE_KEY_FILE` | Absolute path to the age identity file (one identity per line; all are tried, so key rotation works) | _required_ (example: `/age/keys.txt`) |
-| `AGE_REPO_ROOT` | Absolute path to the tree `decrypt` walks when no target path is given | `/repo` |
+| Variable        | Description                                                                                          | Default                               |
+| --------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `AGE_KEY_FILE`  | Absolute path to the age identity file (one identity per line; all are tried, so key rotation works) | _required_ (example: `/age/keys.txt`) |
+| `AGE_REPO_ROOT` | Absolute path to the tree `decrypt` walks when no target path is given                               | `/repo`                               |
 
 ### Volumes
 
-| Mount | Description |
-|-------|-------------|
-| `/age` | Directory containing your age identity (`keys.txt`, mode 0600). Mount read-only. |
-| `/repo` | Repository tree containing the files to decrypt in place. |
+| Mount   | Description                                                                      |
+| ------- | -------------------------------------------------------------------------------- |
+| `/age`  | Directory containing your age identity (`keys.txt`, mode 0600). Mount read-only. |
+| `/repo` | Repository tree containing the files to decrypt in place.                        |
 
 ### Subcommands
 
@@ -122,16 +122,16 @@ docker run --rm \
 
 The `decrypt` subcommand requires **at least one** of: `--ext`, a target path, or `-`. Calling `decrypt` with no arguments is an error (nothing to do).
 
-| Input | Behavior |
-|-------|----------|
-| `decrypt --ext .env` | Walk `AGE_REPO_ROOT`, decrypt only files ending in `.env` |
-| `decrypt --ext .env --ext .yaml` | Walk `AGE_REPO_ROOT`, decrypt files ending in `.env` OR `.yaml` |
-| `decrypt --ext .env /path/to/dir` | Walk the given directory (not `AGE_REPO_ROOT`), filter by `.env` |
-| `decrypt /path/to/file.env` | Decrypt that one file in place (no extension filter — explicit target) |
-| `decrypt /path/to/dir` | Walk that directory, decrypt **all** age-formatted files (no filter) |
-| `decrypt -` | Pipe: read ciphertext from stdin, write plaintext to stdout |
-| `decrypt` (bare, no args) | **Error** (exit 1) — you must specify what to decrypt |
-| `health` | Read `/tmp/.healthy` marker — exit 0 if healthy, 1 if not |
+| Input                             | Behavior                                                               |
+| --------------------------------- | ---------------------------------------------------------------------- |
+| `decrypt --ext .env`              | Walk `AGE_REPO_ROOT`, decrypt only files ending in `.env`              |
+| `decrypt --ext .env --ext .yaml`  | Walk `AGE_REPO_ROOT`, decrypt files ending in `.env` OR `.yaml`        |
+| `decrypt --ext .env /path/to/dir` | Walk the given directory (not `AGE_REPO_ROOT`), filter by `.env`       |
+| `decrypt /path/to/file.env`       | Decrypt that one file in place (no extension filter — explicit target) |
+| `decrypt /path/to/dir`            | Walk that directory, decrypt **all** age-formatted files (no filter)   |
+| `decrypt -`                       | Pipe: read ciphertext from stdin, write plaintext to stdout            |
+| `decrypt` (bare, no args)         | **Error** (exit 1) — you must specify what to decrypt                  |
+| `health`                          | Read `/tmp/.healthy` marker — exit 0 if healthy, 1 if not              |
 
 **`--ext` behavior:** when provided, only files whose name ends with the suffix are candidates. When omitted with an explicit path target, all age-formatted files in the target are decrypted. The dot is auto-prefixed if missing (`--ext env` = `--ext .env`).
 
@@ -163,15 +163,15 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
 
 ## Security
 
-| Tool | Result |
-|------|--------|
-| [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) | No vulnerabilities |
-| [golangci-lint](https://golangci-lint.run/) | Clean (`default: standard` preset incl. govet + staticcheck) |
-| [hadolint](https://github.com/hadolint/hadolint) | Clean |
-| [trivy](https://trivy.dev/) | 0 dependency CVEs (distroless base only) |
-| [grype](https://github.com/anchore/grype) | 0 dependency CVEs (distroless base only) |
-| [gitleaks](https://github.com/gitleaks/gitleaks) | No secrets detected |
-| [CodeQL](https://codeql.github.com/) | No findings |
+| Tool                                                                | Result                                                       |
+| ------------------------------------------------------------------- | ------------------------------------------------------------ |
+| [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) | No vulnerabilities                                           |
+| [golangci-lint](https://golangci-lint.run/)                         | Clean (`default: standard` preset incl. govet + staticcheck) |
+| [hadolint](https://github.com/hadolint/hadolint)                    | Clean                                                        |
+| [trivy](https://trivy.dev/)                                         | 0 dependency CVEs (distroless base only)                     |
+| [grype](https://github.com/anchore/grype)                           | 0 dependency CVEs (distroless base only)                     |
+| [gitleaks](https://github.com/gitleaks/gitleaks)                    | No secrets detected                                          |
+| [CodeQL](https://codeql.github.com/)                                | No findings                                                  |
 
 The image is published with [cosign](https://github.com/sigstore/cosign) signatures and SBOM attestations.
 
@@ -181,11 +181,11 @@ The Go binary is built with `-trimpath` (strip absolute paths) and `-ldflags="-s
 
 All dependencies are updated automatically via [Renovate](https://github.com/renovatebot/renovate) and pinned by digest or version for reproducibility.
 
-| Dependency | Source |
-|------------|--------|
-| golang (builder) | [Docker Hub](https://hub.docker.com/_/golang) |
+| Dependency        | Source                                                                     |
+| ----------------- | -------------------------------------------------------------------------- |
+| golang (builder)  | [Docker Hub](https://hub.docker.com/_/golang)                              |
 | distroless/static | [GoogleContainerTools](https://github.com/GoogleContainerTools/distroless) |
-| filippo.io/age | [GitHub](https://github.com/FiloSottile/age) |
+| filippo.io/age    | [GitHub](https://github.com/FiloSottile/age)                               |
 
 ## Credits
 
