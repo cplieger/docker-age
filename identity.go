@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"filippo.io/age"
@@ -37,7 +38,11 @@ func loadIdentities(path string) ([]age.Identity, error) {
 		return nil, fmt.Errorf("key file too large: %d bytes (max %d)", info.Size(), maxKeyFileSize)
 	}
 
-	identities, err := age.ParseIdentities(f)
+	// Defence in depth: even if the size pre-check above is bypassed (e.g. a
+	// mutated/removed guard), cap the read so an unbounded file can never reach
+	// the parser. Mirrors the io.LimitReader bound used on every read in
+	// decrypt.go; reads any file that passed the size check above.
+	identities, err := age.ParseIdentities(io.LimitReader(f, maxKeyFileSize))
 	if err != nil {
 		return nil, fmt.Errorf("parse key file: %w", err)
 	}

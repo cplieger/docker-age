@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"filippo.io/age"
@@ -60,6 +61,17 @@ func TestParseConfig_extDotPrefix(t *testing.T) {
 	}
 	if cfg.Extensions[0] != ".yaml" {
 		t.Errorf("Extensions[0] = %q, want %q (should auto-prefix dot)", cfg.Extensions[0], ".yaml")
+	}
+}
+
+func TestParseConfig_extRequiresValue(t *testing.T) {
+	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	// A trailing "--ext" with no following value must error rather than index
+	// past args. Exercises the bounds check so a mutated guard (which would
+	// instead panic on out-of-range access or mis-parse) is caught.
+	os.Args = []string{"age", "decrypt", "--ext"}
+	if _, err := parseConfig(); err == nil || !strings.Contains(err.Error(), "requires a value") {
+		t.Errorf("parseConfig([--ext]) = err %v, want one containing 'requires a value'", err)
 	}
 }
 
