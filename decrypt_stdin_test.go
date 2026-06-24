@@ -43,16 +43,16 @@ func TestDecryptStream(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    []byte
-		wantCode int
 		wantOut  []byte
+		wantCode int
 	}{
-		{"armored round-trips", armored, 0, plaintext},
-		{"binary round-trips", binary, 0, plaintext},
-		{"empty input rejected", nil, 1, nil},
-		{"non-age rejected", []byte("PLAIN=value\n"), 1, nil},
-		{"wrong key fails", wrongKey, 1, nil},
-		{"oversized input rejected", oversizedInput, 1, nil},
-		{"oversized output rejected", oversizedOutput, 1, nil},
+		{"armored round-trips", armored, plaintext, 0},
+		{"binary round-trips", binary, plaintext, 0},
+		{"empty input rejected", nil, nil, 1},
+		{"non-age rejected", []byte("PLAIN=value\n"), nil, 1},
+		{"wrong key fails", wrongKey, nil, 1},
+		{"oversized input rejected", oversizedInput, nil, 1},
+		{"oversized output rejected", oversizedOutput, nil, 1},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
