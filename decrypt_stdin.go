@@ -1,61 +1,68 @@
 package main
 
 import (
-	"bytes"
-	"fmt"
 	"io"
+	"log/slog"
 	"os"
 
 	"filippo.io/age"
-	"filippo.io/age/armor"
 )
 
-// runDecryptStdin reads age-encrypted ciphertext from stdin, decrypts it
-// using the provided identities, and writes the plaintext to stdout.
-// Returns 0 on success, 1 on any failure.
+// runDecryptStdin is the thin wrapper wired to the process standard streams:
+// it reads age-encrypted ciphertext from stdin, decrypts it using the provided
+// identities, and writes the plaintext to stdout. Returns 0 on success, 1 on
+// any failure.
 func runDecryptStdin(identities []age.Identity) int {
-	const maxInput = 10 << 20 // 10 MB
-	data, err := io.ReadAll(io.LimitReader(os.Stdin, maxInput+1))
+	return decryptStream(os.Stdin, os.Stdout, identities)
+}
+
+// decryptStream reads age-encrypted ciphertext from in, decrypts it using the
+// provided identities, and writes the plaintext to out. Diagnostics are
+// emitted via slog. Returns 0 on success, 1 on any failure. It is extracted
+// from runDecryptStdin so the pipe path can be unit- and fuzz-tested without
+// touching the process globals, and enforces the same shared caps as the file
+// path (maxEncryptedSize on input, maxDecryptedSize on output).
+func decryptStream(in io.Reader, out io.Writer, identities []age.Identity) int {
+	data, err := io.ReadAll(io.LimitReader(in, maxEncryptedSize+1))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "decrypt-stdin: read error: %v\n", err)
+		slog.Error("decrypt-stdin read error", "error", err)
 		return 1
 	}
-	if len(data) > maxInput {
-		fmt.Fprintf(os.Stderr, "decrypt-stdin: input exceeds %d bytes\n", maxInput)
+	if len(data) > maxEncryptedSize {
+		slog.Error("decrypt-stdin input exceeds size limit", "limit", maxEncryptedSize)
 		return 1
 	}
 	if len(data) == 0 {
-		fmt.Fprintf(os.Stderr, "decrypt-stdin: empty input\n")
+		slog.Error("decrypt-stdin empty input")
 		return 1
 	}
 
-	var reader io.Reader = bytes.NewReader(data)
-	if bytes.HasPrefix(data, []byte(armoredHeader)) {
-		reader = armor.NewReader(reader)
-	} else if !bytes.HasPrefix(data, []byte(ageHeader)) {
-		fmt.Fprintf(os.Stderr, "decrypt-stdin: input is not age-encrypted\n")
+	format := detectAgeFormat(data)
+	if format == notAgeFormat {
+		slog.Error("decrypt-stdin input is not age-encrypted")
 		return 1
 	}
+	reader := ageReader(format, data)
 
 	r, err := age.Decrypt(reader, identities...)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "decrypt-stdin: decrypt error: %v\n", err)
+		slog.Error("decrypt-stdin decrypt error", "error", err)
 		return 1
 	}
 
-	const maxOutput = 1 << 20 // 1 MB
-	cleartext, err := io.ReadAll(io.LimitReader(r, maxOutput+1))
+	cleartext, err := io.ReadAll(io.LimitReader(r, maxDecryptedSize+1))
+	defer clear(cleartext)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "decrypt-stdin: decrypt read error: %v\n", err)
+		slog.Error("decrypt-stdin decrypt read error", "error", err)
 		return 1
 	}
-	if len(cleartext) > maxOutput {
-		fmt.Fprintf(os.Stderr, "decrypt-stdin: decrypted output exceeds %d bytes\n", maxOutput)
+	if len(cleartext) > maxDecryptedSize {
+		slog.Error("decrypt-stdin decrypted output exceeds size limit", "limit", maxDecryptedSize)
 		return 1
 	}
 
-	if _, err := os.Stdout.Write(cleartext); err != nil {
-		fmt.Fprintf(os.Stderr, "decrypt-stdin: write error: %v\n", err)
+	if _, err := out.Write(cleartext); err != nil {
+		slog.Error("decrypt-stdin write error", "error", err)
 		return 1
 	}
 	return 0

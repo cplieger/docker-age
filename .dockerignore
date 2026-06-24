@@ -1,0 +1,7 @@
+# Minimize the build context: the Dockerfile only needs go.mod, go.sum, *.go.
+# Deny everything, then allow the build inputs back in so a stray
+# keys.txt / .env / .env.dec in the working tree never reaches the daemon.
+*
+!go.mod
+!go.sum
+!*.go

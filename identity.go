@@ -44,7 +44,11 @@ func loadIdentities(path string) ([]age.Identity, error) {
 	// decrypt.go; reads any file that passed the size check above.
 	identities, err := age.ParseIdentities(io.LimitReader(f, maxKeyFileSize))
 	if err != nil {
-		return nil, fmt.Errorf("parse key file: %w", err)
+		// age's parse error can echo the raw key-file line (e.g.
+		// "unknown identity type: %q"); drop it so a misconfigured key
+		// file never leaks its contents into stderr/Loki.
+		return nil, errors.New("parse key file: malformed identity " +
+			"(contents omitted; AGE_KEY_FILE must be one age identity per line)")
 	}
 	if len(identities) == 0 {
 		return nil, errors.New("no identities found in key file")

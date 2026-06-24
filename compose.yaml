@@ -1,15 +1,16 @@
 services:
   # Decrypts age-encrypted *.env files in a mounted tree, in place.
   # No command = long-lived server; trigger a pass with:
-  #   docker exec age /age-decrypt decrypt
+  #   docker exec age /age-decrypt decrypt --ext .env
   # Subcommands: decrypt (one pass then exit), health. See README.
   age:
     image: ghcr.io/cplieger/docker-age:latest
     container_name: age
-    restart: unless-stopped
+    restart: unless-stopped  # always-on: stays up between deploys as an exec target
 
     environment:
       AGE_KEY_FILE: "/age/keys.txt"  # required; age identity file
+      # AGE_LOG_LEVEL: debug|info|warn|error (default info); debug shows per-file skip reasons.
       # AGE_REPO_ROOT defaults to /repo; set only to target a subdir (see README).
 
     volumes:

@@ -19,10 +19,6 @@ import (
 // test is written to fail under exactly one mutation of the targeted line and
 // pass against the real code.
 
-// maxEncryptedSize mirrors the unexported const in decryptFile: the 10 MB cap
-// on encrypted input. Hardcoded here (DAMP) so the boundary tests read clearly.
-const maxEncryptedSize = 10 << 20
-
 // nonAgeJunk returns size bytes that are NOT age-formatted (no armored or
 // binary header), so decryptFile classifies them as a legitimate skip rather
 // than attempting a decrypt.
@@ -34,21 +30,27 @@ func nonAgeJunk(size int) []byte {
 	return b
 }
 
-// decryptFile reads at most maxEncryptedSize+1 bytes so that a file one byte
-// over the cap is observed as oversized. Mutating the read bound to
-// `maxEncryptedSize-1` (ARITHMETIC_BASE, decrypt.go:66) truncates the read to
-// below the cap: the oversize check then passes and the (junk) data is treated
-// as a non-age skip instead of a failure.
+// After the format-before-size reorder, a non-age file is classified from its
+// header and skipped regardless of size, so the maxEncryptedSize cap applies
+// ONLY to confirmed age-formatted input — it is now a performance/OOM guard
+// (avoid running age.Decrypt on a 10 MB+ ciphertext), not the skip-vs-fail
+// determinant it once was. The cap's exact boundary is no longer observable via
+// fileStatus (an oversized age JUNK input would fail age.Decrypt anyway), so
+// this pins the surviving observable contract: an age-formatted file over the
+// cap is a failure. The complementary "non-age file is skipped regardless of
+// size" contract is pinned by TestDecryptFile_status ("oversized non-age
+// returns fileSkipped").
 //
-// given a non-age file exactly one byte over the 10 MB cap
+// given an age-formatted file (armored header) one byte over the 10 MB cap
 // when decryptFile reads it
-// then the result is fileFailed (oversized), not fileSkipped.
-func TestDecryptFile_rejects_input_one_byte_over_cap(t *testing.T) {
+// then the result is fileFailed, not fileSkipped.
+func TestDecryptFile_rejects_oversized_age_input(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
 	rel := "oversize.env"
-	if err := os.WriteFile(filepath.Join(tmpDir, rel), nonAgeJunk(maxEncryptedSize+1), 0o644); err != nil {
+	oversized := append([]byte(armoredHeader), nonAgeJunk(maxEncryptedSize+1-len(armoredHeader))...)
+	if err := os.WriteFile(filepath.Join(tmpDir, rel), oversized, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -60,44 +62,15 @@ func TestDecryptFile_rejects_input_one_byte_over_cap(t *testing.T) {
 
 	got := decryptFile(context.Background(), rootDir, rel, []age.Identity{identity})
 	if got != fileFailed {
-		t.Errorf("decryptFile(size=maxEncryptedSize+1) = %d, want %d (fileFailed: over 10 MB cap)", got, fileFailed)
-	}
-}
-
-// The oversize guard is `len(data) > maxEncryptedSize`. A file of exactly
-// maxEncryptedSize bytes must NOT be rejected (the cap is inclusive). Mutating
-// `>` to `>=` (CONDITIONALS_BOUNDARY, decrypt.go:72) rejects a file that is
-// exactly at the cap, flipping the non-age skip into a failure.
-//
-// given a non-age file exactly at the 10 MB cap
-// when decryptFile reads it
-// then the result is fileSkipped (within cap, not age), not fileFailed.
-func TestDecryptFile_accepts_input_exactly_at_cap(t *testing.T) {
-	identity := newIdentity(t)
-	tmpDir := t.TempDir()
-
-	rel := "atcap.env"
-	if err := os.WriteFile(filepath.Join(tmpDir, rel), nonAgeJunk(maxEncryptedSize), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	rootDir, err := os.OpenRoot(tmpDir)
-	if err != nil {
-		t.Fatalf("OpenRoot: %v", err)
-	}
-	defer func() { _ = rootDir.Close() }()
-
-	got := decryptFile(context.Background(), rootDir, rel, []age.Identity{identity})
-	if got != fileSkipped {
-		t.Errorf("decryptFile(size=maxEncryptedSize) = %d, want %d (fileSkipped: within cap, not age)", got, fileSkipped)
+		t.Errorf("decryptFile(age input, size=maxEncryptedSize+1) = %d, want %d (fileFailed: over 10 MB cap)", got, fileFailed)
 	}
 }
 
 // sweepOrphanTmpFile returns true only after it has actually removed a stale
 // tmp file: the success path runs when `rmErr != nil` is false. Mutating that
-// guard to `rmErr == nil` (CONDITIONALS_NEGATION, decrypt.go:151) makes a
-// successful removal report failure (return false) — the file still gets
-// removed, so only the return value distinguishes the mutant.
+// guard to `rmErr == nil` (CONDITIONALS_NEGATION) makes a successful removal
+// report failure (return false) — the file still gets removed, so only the
+// return value distinguishes the mutant.
 //
 // given a stale, removable orphan tmp file
 // when sweepOrphanTmpFile runs
@@ -105,7 +78,7 @@ func TestDecryptFile_accepts_input_exactly_at_cap(t *testing.T) {
 func TestSweepOrphanTmpFile_returns_true_when_stale_file_removed(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	rel := "abandoned.env.tmp.4242"
+	rel := "abandoned.env.4242.1" + tmpSuffix
 	p := filepath.Join(tmpDir, rel)
 	if err := os.WriteFile(p, []byte("from a dead run"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
@@ -130,48 +103,18 @@ func TestSweepOrphanTmpFile_returns_true_when_stale_file_removed(t *testing.T) {
 	}
 }
 
-// isOrphanTmpFile validates the counter suffix digit-by-digit with
-// `(r < '0' || r > '9') && r != '.'`. The lower bound `r < '0'` must keep '0'
-// as a valid digit; mutating it to `r <= '0'` (CONDITIONALS_BOUNDARY,
-// decrypt.go:173) wrongly rejects any suffix containing '0'. The existing
-// suite covers '9' (via ".env.tmp.99999") but never a '0', leaving the lower
-// boundary unkilled.
-//
-// given orphan tmp names whose counters include the boundary digits 0 and 9
-// when isOrphanTmpFile classifies them
-// then each is recognised as an orphan tmp (true).
-func TestIsOrphanTmpFile_accepts_boundary_digits(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-	}{
-		{name: "counter is single zero", input: "app.env.tmp.0"},
-		{name: "counter contains zero", input: "app.env.tmp.10"},
-		{name: "pid dot counter ending in zero", input: "app.env.tmp.100.0"},
-		{name: "counter is single nine", input: "app.env.tmp.9"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isOrphanTmpFile(tc.input); !got {
-				t.Errorf("isOrphanTmpFile(%q) = false, want true (digit boundary must stay valid)", tc.input)
-			}
-		})
-	}
-}
-
 // decryptAll counts swept orphans in orphansRemoved and reports the total in
 // its closing debug log. Mutating `orphansRemoved++` to `orphansRemoved--`
-// (INCREMENT_DECREMENT, decrypt.go:224) logs a negative count. The count is
-// not surfaced in decryptResult, so the debug log is the only observable.
+// (INCREMENT_DECREMENT) logs a negative count. The count is not surfaced in
+// decryptResult, so the debug log is the only observable.
 //
 // This test also kills the CONDITIONALS_NEGATION mutant on the root-walk-error
-// guard (decrypt.go:248): flipping `rootWalkErr != nil` to `== nil` makes the
-// normal (no-error) path enter the if and return early, skipping the
-// "orphan tmp sweep complete" debug log entirely — so the log assertion below
-// fails. rootWalkErr != nil is itself only reachable via a TOCTOU race between
-// OpenRoot and WalkDir (a stale mount appearing mid-pass) and cannot be forced
-// deterministically, so this skipped-log signal is what makes the mutant
-// killable in a unit test.
+// guard: flipping `rootWalkErr != nil` to `== nil` makes the normal (no-error)
+// path enter the if and return early, skipping the "orphan tmp sweep complete"
+// debug log entirely — so the log assertion below fails. rootWalkErr != nil is
+// itself only reachable via a TOCTOU race between OpenRoot and WalkDir (a stale
+// mount appearing mid-pass) and cannot be forced deterministically, so this
+// skipped-log signal is what makes the mutant killable in a unit test.
 //
 // given one stale orphan tmp file in the tree
 // when decryptAll completes a pass
@@ -180,7 +123,7 @@ func TestDecryptAll_logs_one_orphan_removed(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
-	staleTmp := filepath.Join(tmpDir, "abandoned.env.tmp.99999")
+	staleTmp := filepath.Join(tmpDir, "abandoned.env.99999.1"+tmpSuffix)
 	if err := os.WriteFile(staleTmp, []byte("dead run"), 0o600); err != nil {
 		t.Fatalf("write stale tmp: %v", err)
 	}
@@ -204,5 +147,97 @@ func TestDecryptAll_logs_one_orphan_removed(t *testing.T) {
 	}
 	if strings.Contains(out, "removed=-1") {
 		t.Errorf("decryptAll sweep log reported negative count removed=-1, got %q", out)
+	}
+}
+
+// decryptFile's leading guard returns fileSkipped when the context is already
+// canceled, without reading or modifying the file. The decryptAll-level
+// cancellation test aborts in the WalkDir callback before decryptFile is ever
+// called, so this per-file guard is otherwise unexercised and a
+// CONDITIONALS_NEGATION mutant on it would survive.
+//
+// given an already-canceled context and an age-encrypted file
+// when decryptFile runs
+// then it returns fileSkipped and leaves the file byte-for-byte unchanged.
+func TestDecryptFile_skips_on_canceled_context(t *testing.T) {
+	identity := newIdentity(t)
+	tmpDir := t.TempDir()
+	original := []byte("CTX_KEY=value\n")
+	envPath := writeEncryptedEnv(t, tmpDir, "cancel.env", original, identity.Recipient())
+	before, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read before: %v", err)
+	}
+
+	rootDir, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = rootDir.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got := decryptFile(ctx, rootDir, "cancel.env", []age.Identity{identity})
+	if got != fileSkipped {
+		t.Errorf("decryptFile(canceled ctx) = %d, want %d (fileSkipped)", got, fileSkipped)
+	}
+	after, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Error("decryptFile(canceled ctx) modified the file: must be a no-op")
+	}
+}
+
+// TestMatchesAnyExt pins the extension-suffix matcher in isolation.
+// matchesAnyExt is otherwise exercised only indirectly through decryptAll.
+func TestMatchesAnyExt(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		exts []string
+		want bool
+	}{
+		{name: "empty list matches any file", file: "anything.txt", exts: nil, want: true},
+		{name: "empty list matches dotfile", file: ".env", exts: []string{}, want: true},
+		{name: "single ext matches suffix", file: "app.env", exts: []string{".env"}, want: true},
+		{name: "single ext matches bare dotenv", file: ".env", exts: []string{".env"}, want: true},
+		{name: "single ext no match", file: "config.yaml", exts: []string{".env"}, want: false},
+		{name: "multiple ext matches second", file: "config.yaml", exts: []string{".env", ".yaml"}, want: true},
+		{name: "multiple ext matches none", file: "config.json", exts: []string{".env", ".yaml"}, want: false},
+		{name: "suffix match not extension-aware", file: "notanenv.env", exts: []string{".env"}, want: true},
+		{name: "bare name without dot does not match", file: "env", exts: []string{".env"}, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := matchesAnyExt(tc.file, tc.exts); got != tc.want {
+				t.Errorf("matchesAnyExt(%q, %v) = %v, want %v", tc.file, tc.exts, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDecryptFile_directory_target_returns_failed pins decryptFile's header-peek
+// read-error arm: when rootDir.Open succeeds but the target cannot be read as a
+// byte stream, decryptFile must fail closed (fileFailed), never silently skip.
+// A directory is the deterministic trigger: os.Root.Open(dir) succeeds, then
+// io.ReadFull on the directory fd returns a non-EOF "is a directory" error.
+func TestDecryptFile_directory_target_returns_failed(t *testing.T) {
+	identity := newIdentity(t)
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, "adir"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	rootDir, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = rootDir.Close() }()
+
+	got := decryptFile(context.Background(), rootDir, "adir", []age.Identity{identity})
+	if got != fileFailed {
+		t.Errorf("decryptFile(directory target) = %d, want %d (fileFailed: header read must fail closed, not skip)", got, fileFailed)
 	}
 }

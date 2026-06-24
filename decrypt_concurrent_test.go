@@ -19,14 +19,14 @@ import (
 // TestDecryptAll_concurrent_safe reproduces a production race: when an
 // orchestrator fans out pre_deploy across N stacks in parallel, N processes
 // invoke "docker exec age /age-decrypt decrypt" simultaneously. With a
-// shared ".env.tmp" name, one process's sweep deleted another's in-flight
-// tmp, surfacing as:
+// shared tmp name, one process's sweep deleted another's in-flight tmp,
+// surfacing as:
 //
 //	renameat <dir>/.env.tmp <dir>/.env: no such file or directory
 //
 // This test simulates the fan-out in-process (each goroutine plays the role
 // of a separate age-decrypt invocation) and asserts: all runs succeed, every
-// .env file ends up with its correct plaintext, and no ".env.tmp*" debris
+// .env file ends up with its correct plaintext, and no decrypt-temp debris
 // is left on disk.
 func TestDecryptAll_concurrent_safe(t *testing.T) {
 	identity := newIdentity(t)
@@ -85,13 +85,12 @@ func TestDecryptAll_concurrent_safe(t *testing.T) {
 		}
 	}
 
-	// No leftover tmp debris in either legacy or per-PID form.
+	// No leftover decrypt-temp debris (any name carrying the tmpSuffix marker).
 	_ = filepath.WalkDir(tmpDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		name := d.Name()
-		if name == ".env.tmp" || (len(name) > len(".env.tmp.") && strings.Contains(name, ".env.tmp.")) {
+		if isOrphanTmpFile(d.Name()) {
 			t.Errorf("unexpected tmp debris: %s", path)
 		}
 		return nil
@@ -107,7 +106,7 @@ func TestDecryptAll_sweep_preserves_young_peer_tmps(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Simulate a peer process's live tmp, mtime = now (well within threshold).
-	peerTmp := filepath.Join(tmpDir, "peer.env.tmp.12345")
+	peerTmp := filepath.Join(tmpDir, "peer.env.12345.1"+tmpSuffix)
 	if err := os.WriteFile(peerTmp, []byte("mid-flight"), 0o600); err != nil {
 		t.Fatalf("write peer tmp: %v", err)
 	}
@@ -127,7 +126,7 @@ func TestDecryptAll_sweep_removes_stale_per_pid_tmps(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
-	staleTmp := filepath.Join(tmpDir, "abandoned.env.tmp.99999")
+	staleTmp := filepath.Join(tmpDir, "abandoned.env.99999.1"+tmpSuffix)
 	if err := os.WriteFile(staleTmp, []byte("from a SIGKILLed run"), 0o600); err != nil {
 		t.Fatalf("write stale tmp: %v", err)
 	}
@@ -167,15 +166,16 @@ func TestDecryptFile_tmp_name_encodes_pid(t *testing.T) {
 		t.Fatalf("decryptFile = %d, want %d (fileDecrypted)", got, fileDecrypted)
 	}
 
-	// After a successful rename, no matching per-caller tmp should linger.
-	// Format: pinned.env.tmp.<pid>.<counter>
-	prefix := fmt.Sprintf("pinned.env.tmp.%d.", os.Getpid())
+	// After a successful rename, no decrypt temp should linger. The temp is
+	// named <rel>.<pid>.<counter>.age-decrypt-tmp; assert none carrying this
+	// caller's PID and the marker remains.
+	pidMark := fmt.Sprintf("pinned.env.%d.", os.Getpid())
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
 		t.Fatalf("readdir: %v", err)
 	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), prefix) {
+		if strings.HasPrefix(e.Name(), pidMark) && strings.HasSuffix(e.Name(), tmpSuffix) {
 			t.Errorf("per-caller tmp %q should have been renamed away", e.Name())
 		}
 	}
@@ -190,35 +190,28 @@ func TestDecryptFile_tmp_name_encodes_pid(t *testing.T) {
 	}
 }
 
-// TestIsOrphanTmpFile pins the boundaries of the orphan-tmp name
-// matcher directly. Indirect coverage via the sweep tests only ever
-// feeds valid orphan names, leaving the rejection branches (empty
-// suffix, non-digit suffix) uncovered.
+// TestIsOrphanTmpFile pins the decrypt-temp matcher: it recognizes a file by
+// the age-decrypt-tmp marker alone, regardless of the underlying extension
+// (the v2 coverage fix), and deliberately no longer matches the legacy
+// ".env.tmp" shapes — temps are migrated to the marker, not kept compatible.
 func TestIsOrphanTmpFile(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
 		want  bool
 	}{
-		{name: "legacy bare suffix", input: ".env.tmp", want: true},
-		{name: "legacy prefixed suffix", input: "app.env.tmp", want: true},
-		{name: "per-pid single counter", input: "app.env.tmp.12345", want: true},
-		{name: "per-pid pid dot counter", input: "app.env.tmp.12345.7", want: true},
-		{name: "bare dotenv with pid", input: ".env.tmp.99999", want: true},
-		{name: "bare dotenv simple counter", input: ".env.tmp.123", want: true},
-		{name: "bare dotenv pid dot counter", input: ".env.tmp.1.2", want: true},
-		{name: "prefixed single digit counter", input: "foo.env.tmp.9", want: true},
-		{name: "trailing double dot counter", input: ".env.tmp..", want: true},
-		{name: "plain env file not orphan", input: "app.env", want: false},
-		{name: "decrypted dotenv not orphan", input: ".env", want: false},
+		{name: "env temp", input: "app.env.12345.7" + tmpSuffix, want: true},
+		{name: "bare dotenv temp", input: ".env.99999.1" + tmpSuffix, want: true},
+		{name: "non-env temp (the v2 coverage gap)", input: "config.yaml.4242.2" + tmpSuffix, want: true},
+		{name: "json temp", input: "secrets.json.1.1" + tmpSuffix, want: true},
+		{name: "marker alone", input: tmpSuffix, want: true},
+		{name: "plain env file", input: "app.env", want: false},
+		{name: "decrypted dotenv", input: ".env", want: false},
 		{name: "non env file", input: "config.txt", want: false},
-		{name: "empty suffix after dot", input: "app.env.tmp.", want: false},
-		{name: "non-digit suffix", input: "app.env.tmp.abc", want: false},
-		{name: "mixed digit and letter suffix", input: "app.env.tmp.12a", want: false},
-		{name: "envtmp without dot separator", input: ".env.tmpfoo", want: false},
-		{name: "envtmp single trailing letter", input: ".env.tmpX", want: false},
-		{name: "bare empty suffix after dot", input: ".env.tmp.", want: false},
-		{name: "envtmp missing leading dot", input: "envtmp", want: false},
+		{name: "legacy bare suffix no longer matched", input: ".env.tmp", want: false},
+		{name: "legacy pid-keyed suffix no longer matched", input: "app.env.tmp.12345.7", want: false},
+		{name: "marker not at end", input: "note" + tmpSuffix + ".bak", want: false},
+		{name: "marker substring missing leading dot", input: "fileage-decrypt-tmp", want: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
