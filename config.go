@@ -1,3 +1,5 @@
+// Package main implements age-decrypt, which walks a mounted directory tree
+// and decrypts age-encrypted files (binary or armored age format) in place.
 package main
 
 import (
@@ -30,7 +32,7 @@ func parseConfig() (config, error) {
 
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "decrypt":
+		case modeDecrypt:
 			mode = modeDecrypt
 			// Parse --ext flags and positional args from os.Args[2:]
 			args := os.Args[2:]
@@ -41,15 +43,16 @@ func parseConfig() (config, error) {
 						return config{}, errors.New("--ext requires a value (e.g. --ext .env)")
 					}
 					i++
-					ext := args[i]
-					if !strings.HasPrefix(ext, ".") {
-						ext = "." + ext
+					ext, extErr := normalizeExt(args[i])
+					if extErr != nil {
+						return config{}, extErr
 					}
 					extensions = append(extensions, ext)
 				case strings.HasPrefix(args[i], "--ext="):
-					_, ext, _ := strings.Cut(args[i], "=")
-					if !strings.HasPrefix(ext, ".") {
-						ext = "." + ext
+					_, raw, _ := strings.Cut(args[i], "=")
+					ext, extErr := normalizeExt(raw)
+					if extErr != nil {
+						return config{}, extErr
 					}
 					extensions = append(extensions, ext)
 				case args[i] == "--":
@@ -85,4 +88,19 @@ func parseConfig() (config, error) {
 		Extensions: extensions,
 		Targets:    targets,
 	}, nil
+}
+
+// normalizeExt validates a --ext value and ensures it carries a leading dot.
+// An empty value is rejected so a malformed flag ("--ext=" or `--ext ""`)
+// cannot silently collapse to the "." suffix, which matches almost nothing and
+// turns the decrypt pass into a no-op that still exits 0 -- defeating the deploy
+// gate that keys on the exit code.
+func normalizeExt(raw string) (string, error) {
+	if raw == "" || raw == "." {
+		return "", errors.New("--ext requires a non-empty value (e.g. --ext .env)")
+	}
+	if !strings.HasPrefix(raw, ".") {
+		raw = "." + raw
+	}
+	return raw, nil
 }

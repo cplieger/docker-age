@@ -17,7 +17,7 @@ the canonical identifier.
 
 Flat `package main`, one concern per file:
 
-- `main.go` — entry point and the two run modes (`runSubcommand`,
+- `main.go` — entry point and the two run modes (`runDecrypt`,
   `runServer`), plus the file-based health marker/probe wiring via
   `github.com/cplieger/health`. The `health` probe is intercepted here
   _before_ `parseConfig` runs, because the probe must work without
@@ -44,11 +44,13 @@ before touching `decrypt.go`.
   read), `rootDir.WriteFile`, `rootDir.Rename`. This confines I/O to the
   mounted tree and blocks symlink escapes. Do not reach for the bare `os`
   package for paths inside the tree.
-- **Temp file names must stay unique per call.** `decryptFile` names its
-  temp file `<rel>.tmp.<pid>.<counter>` using the PID plus a process-local
-  atomic counter (`tmpCounter`). A shared name like `.env.tmp` reintroduces
-  the production race where one invocation's rename collides with another's
-  orphan sweep. Keep the per-call uniqueness.
+- **Temp file names must stay unique per call and carry the marker.**
+  `decryptFile` names its temp file `<rel>.<pid>.<counter>.age-decrypt-tmp`
+  (the `tmpSuffix` marker) using the PID plus a process-local atomic counter
+  (`tmpCounter`). The PID+counter keep concurrent peers from colliding (a
+  shared name reintroduces the production rename-vs-sweep race); the
+  `tmpSuffix` marker is how the orphan sweep recognizes the tool's own temps
+  for any extension without ever matching a user's file. Keep both.
 - **`decryptFile` is tri-state, and skips are not failures.** It returns
   `fileSkipped` (not age-formatted — legitimate, logged at debug),
   `fileDecrypted`, or `fileFailed`. In **decrypt mode** (`runDecrypt`,
@@ -59,19 +61,17 @@ file or directory`) is fatal, so a stale `/repo` fails loudly instead of
   reporting a clean `decrypted=0` / exit 0. Per-subdirectory walk errors stay
   non-fatal (logged, the walk continues). A tree of plaintext files (no age headers) —
   or a legitimately empty tree — is still a clean run.
-- **Server mode never exits on a startup decrypt failure.** `runServer`
-  performs a startup decrypt and sets the health marker via
-  `startupHealthy(result, err)` (`err == nil && result.Failed == 0`): a hard
-  error (unreadable repo root) _and_ any per-file failure both mark the
-  container **unhealthy but keep it running**. The container's role is to be a
-  long-lived `docker exec age /age-decrypt decrypt --ext .env` target for the deploy;
-  exiting on startup would crash-loop it under `restart: unless-stopped` and
-  remove the exec target precisely when a deploy needs it (the failure is
-  usually a transient deploy-time mount race a later exec or a restart
-  recovers from). The loud, deploy-blocking signal lives in subcommand mode
-  (non-zero exit); server mode surfaces failures through the health marker.
-  Don't make `runServer` return non-zero on a startup decrypt failure, and
-  don't revert the marker to an unconditional `Set(true)`.
+- **Server mode idles; it performs no startup decrypt.** `runServer`
+  sets the health marker healthy (`marker.Set(true)`) and blocks on the
+  signal context until SIGINT/SIGTERM, then cleans up on shutdown.
+  There is no startup decrypt and no `startupHealthy` gate --
+  the container's only job is to stay alive as a long-lived
+  `docker exec age /age-decrypt decrypt --ext .env` target for the deploy.
+  All decrypt work, and its loud deploy-blocking non-zero exit on failure,
+  happens in the exec'd `decrypt` subcommand, never at server startup.
+  Don't add a startup decrypt to `runServer` or make it exit non-zero on a
+  decrypt outcome -- that would crash-loop it under `restart: unless-stopped`
+  and remove the exec target precisely when a deploy needs it.
 - **`loadIdentities` returns every identity, and `decryptFile` tries them
   all.** The key file is "one identity per line"; `loadIdentities` returns the
   full `[]age.Identity` and `decryptFile` forwards it to the variadic

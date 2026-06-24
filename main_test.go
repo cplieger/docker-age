@@ -821,14 +821,16 @@ func TestDecryptAll_respects_context_cancellation(t *testing.T) {
 	cancel()
 
 	result, err := decryptAll(ctx, tmpDir, []age.Identity{identity}, nil)
-	if err != nil {
-		t.Fatalf("decryptAll with canceled ctx: %v", err)
+	// A canceled context aborts the walk and is reported as an error so the
+	// caller (runDecrypt) exits non-zero — a pass that did not finish must
+	// never look like success to the deploy gate.
+	if err == nil {
+		t.Fatal("decryptAll(canceled ctx) = nil error, want a cancellation error")
 	}
-	// With a pre-canceled context, the walk callback returns SkipAll on the
-	// first entry. Depending on WalkDir ordering, the root directory entry
-	// may or may not be visited before the .env file, so Decrypted could be
-	// 0 (skipped before reaching the file) or possibly 0 (SkipAll fires on
-	// the directory itself). The key invariant: no file should be decrypted.
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("decryptAll(canceled ctx) err = %v, want one wrapping context.Canceled", err)
+	}
+	// No file should have been decrypted (the walk aborted on the first entry).
 	if result.Decrypted != 0 {
 		t.Errorf("decryptAll(canceled ctx) decrypted %d files, want 0", result.Decrypted)
 	}
@@ -861,14 +863,15 @@ func TestDecryptAll_sweeps_orphan_tmp_files(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
-	// Create orphan .env.tmp files (simulating a prior SIGKILL between
+	// Create orphan decrypt temp files (simulating a prior SIGKILL between
 	// WriteFile and Rename). Backdate them so they fall past the sweep's
 	// stale threshold — young tmps are intentionally preserved now to
-	// avoid ripping the tmp out from under a concurrent peer.
-	orphan1 := filepath.Join(tmpDir, "app.env.tmp") // legacy name
+	// avoid ripping the tmp out from under a concurrent peer. One is a .env
+	// temp, the other a non-.env (.yaml) temp the marker now also reclaims.
+	orphan1 := filepath.Join(tmpDir, "app.env.111.1"+tmpSuffix)
 	orphan2 := filepath.Join(tmpDir, "sub")
 	_ = os.MkdirAll(orphan2, 0o755)
-	orphan2File := filepath.Join(orphan2, "db.env.tmp.99999") // per-PID name
+	orphan2File := filepath.Join(orphan2, "db.yaml.99999.2"+tmpSuffix)
 
 	_ = os.WriteFile(orphan1, []byte("LEAKED_SECRET=bad\n"), 0o600)
 	_ = os.WriteFile(orphan2File, []byte("LEAKED_DB=bad\n"), 0o600)
@@ -893,7 +896,7 @@ func TestDecryptAll_sweeps_orphan_tmp_files(t *testing.T) {
 		t.Errorf("decryptAll Decrypted = %d, want 1", result.Decrypted)
 	}
 
-	// Both legacy and per-PID orphan tmps should have been removed by the sweep.
+	// Both orphan temps (.env and non-.env) should have been removed by the sweep.
 	if _, err := os.Stat(orphan1); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("orphan %s should have been removed, stat err = %v", orphan1, err)
 	}
@@ -909,7 +912,7 @@ func TestRunSubcommand_returns_zero_on_success(t *testing.T) {
 	original := []byte("SUB_KEY=value\n")
 	writeEncryptedEnv(t, tmpDir, "app.env", original, identity.Recipient())
 
-	code := runDecrypt(&config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{identity})
+	code := runDecrypt(context.Background(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{identity})
 	if code != 0 {
 		t.Errorf("runDecrypt(valid) = %d, want 0", code)
 	}
@@ -923,7 +926,7 @@ func TestRunSubcommand_returns_one_on_decrypt_failure(t *testing.T) {
 	// Encrypt with one key, decrypt with another — produces Failed > 0.
 	writeEncryptedEnv(t, tmpDir, "secret.env", []byte("S=v\n"), encryptID.Recipient())
 
-	code := runDecrypt(&config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{decryptID})
+	code := runDecrypt(context.Background(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{decryptID})
 	if code != 1 {
 		t.Errorf("runDecrypt(wrong key) = %d, want 1 (Failed > 0)", code)
 	}
@@ -933,7 +936,7 @@ func TestRunSubcommand_returns_one_on_invalid_root(t *testing.T) {
 	identity := newIdentity(t)
 	bogusRoot := filepath.Join(t.TempDir(), "does-not-exist")
 
-	code := runDecrypt(&config{RepoRoot: bogusRoot, Extensions: []string{".env"}}, []age.Identity{identity})
+	code := runDecrypt(context.Background(), &config{RepoRoot: bogusRoot, Extensions: []string{".env"}}, []age.Identity{identity})
 	if code != 1 {
 		t.Errorf("runDecrypt(invalid root) = %d, want 1", code)
 	}
@@ -1121,6 +1124,18 @@ func TestDecryptFile_status(t *testing.T) {
 			id:      decryptID,
 			want:    fileFailed,
 		},
+		{
+			// A large NON-age file is classified from its header and skipped
+			// regardless of size — it was never a secret, so it is not a
+			// failure. Pins the header-peek-before-size-cap ordering: prior to
+			// the reorder a 10 MB+ non-age file was read in full and returned
+			// fileFailed, which in no-filter mode wrongly blocked the deploy.
+			name:    "oversized non-age returns fileSkipped",
+			file:    "huge-plain.env",
+			content: bytes.Repeat([]byte("X"), 10<<20+1),
+			id:      decryptID,
+			want:    fileSkipped,
+		},
 	}
 
 	for _, tc := range tests {
@@ -1174,8 +1189,43 @@ func FuzzDecryptFile(f *testing.F) {
 		}
 		defer func() { _ = rootDir.Close() }()
 
-		// Must not panic regardless of input.
-		_ = decryptFile(context.Background(), rootDir, "fuzz.env", []age.Identity{id})
+		isAge := bytes.HasPrefix(data, []byte(armoredHeader)) ||
+			bytes.HasPrefix(data, []byte(ageHeader))
+
+		status := decryptFile(context.Background(), rootDir, "fuzz.env", []age.Identity{id})
+
+		// Invariant 1: result is always one of the three defined statuses.
+		switch status {
+		case fileSkipped, fileDecrypted, fileFailed:
+		default:
+			t.Fatalf("decryptFile returned undefined status %d for input %q", status, data)
+		}
+
+		// Invariant 2: input without a recognized age header is never reported
+		// as decrypted and is left byte-for-byte unchanged on disk.
+		if !isAge {
+			if status == fileDecrypted {
+				t.Errorf("non-age input reported fileDecrypted (input %q)", data)
+			}
+			after, readErr := os.ReadFile(envPath)
+			if readErr != nil {
+				t.Fatalf("read back: %v", readErr)
+			}
+			if !bytes.Equal(after, data) {
+				t.Errorf("non-age input was modified on disk: got %q, want %q", after, data)
+			}
+		}
+
+		// Invariant 3: regardless of outcome, no temp debris is ever left behind.
+		entries, readErr := os.ReadDir(tmpDir)
+		if readErr != nil {
+			t.Fatalf("readdir: %v", readErr)
+		}
+		for _, e := range entries {
+			if isOrphanTmpFile(e.Name()) {
+				t.Errorf("decryptFile left tmp debris %q (input %q)", e.Name(), data)
+			}
+		}
 	})
 }
 
@@ -1468,8 +1518,35 @@ func FuzzLoadIdentity(f *testing.F) {
 		if err := os.WriteFile(keyPath, data, 0o600); err != nil {
 			t.Fatalf("write: %v", err)
 		}
-		// loadIdentity must not panic regardless of input.
-		_, _ = loadIdentities(keyPath)
+		ids, err := loadIdentities(keyPath)
+		// Invariant 1: error and result are mutually exclusive.
+		if err != nil {
+			if ids != nil {
+				t.Errorf("loadIdentities returned %d identities alongside error %v, want nil",
+					len(ids), err)
+			}
+			return
+		}
+
+		// Invariant 2: documented success contract -- nil error guarantees at
+		// least one identity and none of them is nil (forwarded verbatim to
+		// variadic age.Decrypt).
+		if len(ids) == 0 {
+			t.Errorf("loadIdentities returned nil error but zero identities for input %q", data)
+		}
+		for i, identity := range ids {
+			if identity == nil {
+				t.Errorf("loadIdentities returned a nil identity at index %d for input %q", i, data)
+			}
+		}
+
+		// Invariant 3: the 1 MB key-file size cap is honored -- an input larger
+		// than the cap must never parse successfully.
+		const maxKeyFileSize = 1 << 20
+		if len(data) > maxKeyFileSize {
+			t.Errorf("loadIdentities accepted an oversized %d-byte key file (cap %d)",
+				len(data), maxKeyFileSize)
+		}
 	})
 }
 
@@ -1584,7 +1661,7 @@ func TestWarnIfNoFilesSeen_warns_only_when_no_files_seen(t *testing.T) {
 			prev := slog.Default()
 			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 			t.Cleanup(func() { slog.SetDefault(prev) })
-			warnIfNoFilesSeen(tt.result, "/repo/homelab")
+			warnIfNoFilesSeen(tt.result, "/repo/homelab", nil)
 			out := buf.String()
 			gotWarn := strings.Contains(out, "no matching files found")
 			if gotWarn != tt.wantWarn {
@@ -1623,5 +1700,346 @@ func TestLogDecryptResult_emits_all_counts(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("logDecryptResult output missing %q, got %q", want, out)
 		}
+	}
+}
+
+// TestDecryptFile_rejects_corrupted_body_leaves_file_unchanged feeds a binary
+// ciphertext whose header is valid but whose final payload chunk is truncated:
+// age.Decrypt succeeds, the body fails AEAD authentication on read, and
+// decryptFile must return fileFailed BEFORE the temp-write/rename, leaving the
+// original file byte-for-byte intact. Reaches the post-Decrypt io.ReadAll error
+// branch (decrypt.go:120) that the header-corruption / wrong-key cases skip, and
+// pins the security invariant that a tampered body never produces a partially
+// written plaintext .env.
+func TestDecryptFile_rejects_corrupted_body_leaves_file_unchanged(t *testing.T) {
+	id := newIdentity(t)
+	full, err := encryptBinary([]byte("SECRET=value\n"), id.Recipient())
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	corrupt := full[:len(full)-1]
+
+	tmpDir := t.TempDir()
+	envPath := filepath.Join(tmpDir, "tampered.env")
+	if err := os.WriteFile(envPath, corrupt, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	rootDir, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = rootDir.Close() }()
+
+	got := decryptFile(context.Background(), rootDir, "tampered.env", []age.Identity{id})
+	if got != fileFailed {
+		t.Errorf("decryptFile(corrupt body) = %d, want %d (fileFailed)", got, fileFailed)
+	}
+
+	after, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if !bytes.Equal(after, corrupt) {
+		t.Error("decryptFile(corrupt body) modified the file: a body-auth failure must not write partial plaintext")
+	}
+}
+
+// TestSweepOrphanTmpFile_returns_false_when_remove_fails pins the remove-failure
+// branch (decrypt.go:178-182): a stale orphan whose unlink fails for a reason
+// other than fs.ErrNotExist (here an unwritable parent dir -> EACCES) must be
+// logged and reported as not-swept (return false), with the file left in place.
+// Existing sweep tests cover stat-miss, young-preserved, and successful removal
+// but never a removable-stale-that-fails-to-unlink. Windows + root are skipped:
+// chmod cannot revoke write for either, matching the existing chmod-based tests
+// in this file.
+func TestSweepOrphanTmpFile_returns_false_when_remove_fails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows: chmod on directories unreliable")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("skipping as root: chmod bypass makes directory writable")
+	}
+
+	tmpDir := t.TempDir()
+	rel := "stale.env.4242.1" + tmpSuffix
+	p := filepath.Join(tmpDir, rel)
+	if err := os.WriteFile(p, []byte("plaintext orphan"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	old := time.Now().Add(-30 * time.Minute)
+	if err := os.Chtimes(p, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	// Make the parent unwritable so the unlink fails with EACCES (not ErrNotExist).
+	if err := os.Chmod(tmpDir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(tmpDir, 0o755) })
+
+	rootDir, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = rootDir.Close() }()
+
+	got := sweepOrphanTmpFile(rootDir, rel, 10*time.Minute)
+	if got {
+		t.Errorf("sweepOrphanTmpFile(stale, unremovable) = true, want false (remove failed)")
+	}
+	// File must still be present (removal failed).
+	if _, statErr := os.Stat(p); errors.Is(statErr, fs.ErrNotExist) {
+		t.Error("orphan unexpectedly removed despite unwritable parent dir")
+	}
+}
+
+// TestParseConfig_extRejectsEmptyValue asserts that an empty --ext value is
+// rejected rather than silently coerced to the bare "." suffix. That suffix
+// matches almost no files, so the decrypt pass would no-op yet still exit 0 --
+// defeating the deploy gate that keys on the exit code. Both the equals form
+// ("--ext=") and the space form with an explicit empty argument (`--ext ""`)
+// route through normalizeExt and must error. Complements
+// TestParseConfig_extRequiresValue, which covers only the trailing bare --ext.
+func TestParseConfig_extRejectsEmptyValue(t *testing.T) {
+	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"equals form", []string{"age", "decrypt", "--ext="}},
+		{"space form", []string{"age", "decrypt", "--ext", ""}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Args = tc.args
+			_, err := parseConfig()
+			if err == nil || !strings.Contains(err.Error(), "requires") {
+				t.Errorf("parseConfig(%v) = err %v, want one containing 'requires'", tc.args, err)
+			}
+		})
+	}
+}
+
+// TestWriteDecryptedInPlace_rename_failure_leaves_no_plaintext_debris pins the
+// cleanup contract of the cycle-1-extracted writeDecryptedInPlace: when the
+// rename step fails (the exact production failure mode that motivated PID-keyed
+// tmp naming -- "renameat <dir>/.env.tmp <dir>/.env: no such file or
+// directory"), the function must return fileFailed AND remove the 0600
+// plaintext temp so no decrypted secret lingers on disk. The rename-failure
+// branch (decrypt.go ~165-181) is otherwise unexercised -- existing tests cover
+// only the happy path and the WriteFile-failure (read-only dir) path. A
+// deterministic rename failure is forced by making rel an existing directory:
+// renaming a file onto a directory fails (EISDIR).
+func TestWriteDecryptedInPlace_rename_failure_leaves_no_plaintext_debris(t *testing.T) {
+	tmpDir := t.TempDir()
+	rel := "target"
+	if err := os.Mkdir(filepath.Join(tmpDir, rel), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	rootDir, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = rootDir.Close() }()
+
+	got := writeDecryptedInPlace(rootDir, rel, []byte("SECRET=plaintext\n"))
+	if got != fileFailed {
+		t.Errorf("writeDecryptedInPlace(rename onto dir) = %d, want %d (fileFailed)", got, fileFailed)
+	}
+
+	// Security invariant: a failed in-place rewrite must leave no 0600 plaintext
+	// temp debris behind (any name carrying the tmpSuffix marker).
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if isOrphanTmpFile(e.Name()) {
+			t.Errorf("rename-failure left plaintext temp debris: %q", e.Name())
+		}
+	}
+}
+
+// TestWipeTempFile_truncates_when_remove_blocked pins the security-critical
+// defense-in-depth in wipeTempFile (decrypt.go:137-140): when the unlink of the
+// 0600 plaintext temp fails for a reason OTHER than fs.ErrNotExist, the function
+// must truncate the temp to zero so decrypted plaintext cannot linger on disk
+// until the age-bound orphan sweep reclaims it. This fallback was previously
+// uncovered (wipeTempFile 33.3%). Cycle 2 dismissed it as "equivalent-mutant
+// territory -- no deterministic os.Root injection point", but that is incorrect:
+// rootDir.Remove fails deterministically with EACCES under a 0o555 parent dir
+// (the SAME injection point TestSweepOrphanTmpFile_returns_false_when_remove_fails
+// already relies on), while truncating an existing 0o600 file needs only
+// file-write permission, so the WriteFile-truncate still succeeds.
+func TestWipeTempFile_truncates_when_remove_blocked(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows: chmod on directories unreliable")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("skipping as root: chmod bypass makes directory writable")
+	}
+
+	tmpDir := t.TempDir()
+	rel := "leftover.env.4242.1" + tmpSuffix
+	p := filepath.Join(tmpDir, rel)
+	if err := os.WriteFile(p, []byte("SECRET=plaintext\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// Make the parent unwritable so the unlink fails with EACCES (not
+	// ErrNotExist), forcing the truncate-to-zero fallback. Truncating the
+	// existing 0o600 file needs file (not dir) write permission, so it succeeds.
+	if err := os.Chmod(tmpDir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(tmpDir, 0o755) })
+
+	rootDir, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = rootDir.Close() }()
+
+	wipeTempFile(rootDir, rel)
+
+	// Security invariant: plaintext must not linger. The unlink was blocked, so
+	// the file remains -- but it must have been truncated to zero bytes.
+	info, statErr := os.Stat(p)
+	if statErr != nil {
+		if errors.Is(statErr, fs.ErrNotExist) {
+			return // removed entirely also satisfies "no plaintext lingers"
+		}
+		t.Fatalf("stat: %v", statErr)
+	}
+	if info.Size() != 0 {
+		t.Errorf("wipeTempFile left %d bytes of plaintext on disk, want 0 (truncate-to-zero fallback)", info.Size())
+	}
+}
+
+// TestRunDecrypt_walkError_blocks_deploy pins the fail-closed exit gate: a
+// subtree the walk cannot read (WalkErrors > 0) must block the deploy (exit 1)
+// even when every file the walk DID reach decrypted cleanly (Failed == 0). An
+// unread subtree leaves its age-encrypted files as ciphertext, the same
+// silent-no-op the fatal root-level walk error prevents, so it gets the same
+// exit-1 treatment one level down. Windows + root are skipped: chmod 0o000
+// cannot revoke read for either.
+func TestRunDecrypt_walkError_blocks_deploy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows: permission-based walk errors unreliable")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("skipping as root: chmod bypass makes the directory readable")
+	}
+
+	identity := newIdentity(t)
+	tmpDir := t.TempDir()
+
+	// A top-level .env that decrypts cleanly: Decrypted=1, Failed=0.
+	writeEncryptedEnv(t, tmpDir, "app.env", []byte("OK=1\n"), identity.Recipient())
+
+	// An unreadable subtree (WalkErrors>0) hiding an encrypted .env that is
+	// therefore never decrypted: the ciphertext-left-behind hazard.
+	noReadDir := filepath.Join(tmpDir, "locked")
+	if err := os.MkdirAll(noReadDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeEncryptedEnv(t, noReadDir, "hidden.env", []byte("SECRET=2\n"), identity.Recipient())
+	if err := os.Chmod(noReadDir, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(noReadDir, 0o755) })
+
+	code := runDecrypt(context.Background(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{identity})
+	if code != 1 {
+		t.Errorf("runDecrypt(unreadable subtree, Failed=0 WalkErrors>0) = %d, want 1 (walk error must block the deploy)", code)
+	}
+}
+
+// TestRunDecrypt_canceled_context_exits_one pins the wired cancellation on the
+// single-file path: a canceled context (SIGINT/SIGTERM) must make runDecrypt
+// exit non-zero rather than report the interrupted file as a skip and exit 0.
+// decryptFile reports the file fileSkipped on a canceled context, so the
+// runDecrypt post-loop guard is what turns that into the deploy-blocking exit.
+// The walk path's cancellation is exercised by
+// TestDecryptAll_respects_context_cancellation (decryptAll returns an error).
+func TestRunDecrypt_canceled_context_exits_one(t *testing.T) {
+	identity := newIdentity(t)
+	tmpDir := t.TempDir()
+	path := writeEncryptedEnv(t, tmpDir, "one.env", []byte("K=v\n"), identity.Recipient())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	code := runDecrypt(ctx, &config{Targets: []string{path}}, []age.Identity{identity})
+	if code != 1 {
+		t.Errorf("runDecrypt(canceled ctx, single-file target) = %d, want 1 (canceled pass must exit non-zero)", code)
+	}
+}
+
+// TestLogLevel maps AGE_LOG_LEVEL to a slog.Level, defaulting to Info for an
+// unset, empty, or unrecognized value (the safe deploy-gate default) and
+// accepting the level names case-insensitively.
+func TestLogLevel(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want slog.Level
+	}{
+		{name: "unset/empty", env: "", want: slog.LevelInfo},
+		{name: "debug", env: "debug", want: slog.LevelDebug},
+		{name: "debug uppercase", env: "DEBUG", want: slog.LevelDebug},
+		{name: "info", env: "info", want: slog.LevelInfo},
+		{name: "warn", env: "warn", want: slog.LevelWarn},
+		{name: "warning alias", env: "warning", want: slog.LevelWarn},
+		{name: "error", env: "error", want: slog.LevelError},
+		{name: "unrecognized falls back to info", env: "loud", want: slog.LevelInfo},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGE_LOG_LEVEL", tc.env)
+			if got := logLevel(); got != tc.want {
+				t.Errorf("logLevel() with AGE_LOG_LEVEL=%q = %v, want %v", tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWipeTempFile_logs_when_truncate_also_fails covers wipeTempFile's inner arm:
+// when Remove fails (not ErrNotExist) AND the truncate fallback also fails,
+// the function logs a "temp cleanup error" warning.
+func TestWipeTempFile_logs_when_truncate_also_fails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows: chmod on directories unreliable")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("skipping as root: chmod bypass makes the file writable")
+	}
+	tmpDir := t.TempDir()
+	rel := "leftover.env.4242.1" + tmpSuffix
+	p := filepath.Join(tmpDir, rel)
+	if err := os.WriteFile(p, []byte("SECRET=plaintext\n"), 0o400); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// 0o555 parent: unlink fails EACCES. 0o400 temp: truncate fails EACCES too.
+	if err := os.Chmod(tmpDir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(tmpDir, 0o755) })
+
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	rootDir, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = rootDir.Close() }()
+
+	wipeTempFile(rootDir, rel)
+
+	if out := buf.String(); !strings.Contains(out, "temp cleanup error") {
+		t.Errorf("wipeTempFile(remove+truncate both fail) log = %q, want a 'temp cleanup error' warning", out)
 	}
 }

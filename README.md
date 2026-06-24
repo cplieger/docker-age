@@ -104,6 +104,7 @@ docker run --rm \
 | --------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------- |
 | `AGE_KEY_FILE`  | Absolute path to the age identity file (one identity per line; all are tried, so key rotation works) | _required_ (example: `/age/keys.txt`) |
 | `AGE_REPO_ROOT` | Absolute path to the tree `decrypt` walks when no target path is given                               | `/repo`                               |
+| `AGE_LOG_LEVEL` | Log level: `debug`/`info`/`warn`/`error` (case-insensitive); `debug` shows per-file skip reasons     | `info`                                |
 
 ### Volumes
 
