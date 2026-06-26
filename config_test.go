@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -95,6 +96,124 @@ func TestParseConfig(t *testing.T) {
 			}
 			if cfg.RepoRoot != tt.wantRepoRoot {
 				t.Errorf("RepoRoot = %q, want %q", cfg.RepoRoot, tt.wantRepoRoot)
+			}
+		})
+	}
+}
+
+// --- config parsing: --ext flags and positional args ---
+
+func TestParseConfig_extFlags(t *testing.T) {
+	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	tests := []struct {
+		name        string
+		args        []string
+		wantExts    []string
+		wantTargets []string
+	}{
+		{"no ext", []string{"age", "decrypt"}, nil, nil},
+		{"single ext", []string{"age", "decrypt", "--ext", ".yaml"}, []string{".yaml"}, nil},
+		{"multiple ext", []string{"age", "decrypt", "--ext", ".env", "--ext", ".yaml"}, []string{".env", ".yaml"}, []string(nil)},
+		{"ext=value form", []string{"age", "decrypt", "--ext=conf"}, []string{".conf"}, nil},
+		{"ext with path", []string{"age", "decrypt", "--ext", ".env", "/foo"}, []string{".env"}, []string{"/foo"}},
+		{"pipe target", []string{"age", "decrypt", "-"}, nil, []string{"-"}},
+		{"double dash", []string{"age", "decrypt", "--", "-weird"}, nil, []string{"-weird"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Args = tc.args
+			cfg, err := parseConfig()
+			if err != nil {
+				t.Fatalf("parseConfig() error: %v", err)
+			}
+			if len(cfg.Extensions) != len(tc.wantExts) {
+				t.Errorf("Extensions = %v, want %v", cfg.Extensions, tc.wantExts)
+			} else {
+				for i := range cfg.Extensions {
+					if cfg.Extensions[i] != tc.wantExts[i] {
+						t.Errorf("Extensions[%d] = %q, want %q", i, cfg.Extensions[i], tc.wantExts[i])
+					}
+				}
+			}
+			if len(cfg.Targets) != len(tc.wantTargets) {
+				t.Errorf("Targets = %v, want %v", cfg.Targets, tc.wantTargets)
+			}
+		})
+	}
+}
+
+func TestParseConfig_extDotPrefix(t *testing.T) {
+	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	os.Args = []string{"age", "decrypt", "--ext", "yaml"}
+	cfg, err := parseConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Extensions[0] != ".yaml" {
+		t.Errorf("Extensions[0] = %q, want %q (should auto-prefix dot)", cfg.Extensions[0], ".yaml")
+	}
+}
+
+func TestParseConfig_extRequiresValue(t *testing.T) {
+	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	// A trailing "--ext" with no following value must error rather than index
+	// past args. Exercises the bounds check so a mutated guard (which would
+	// instead panic on out-of-range access or mis-parse) is caught.
+	os.Args = []string{"age", "decrypt", "--ext"}
+	if _, err := parseConfig(); err == nil || !strings.Contains(err.Error(), "requires a value") {
+		t.Errorf("parseConfig([--ext]) = err %v, want one containing 'requires a value'", err)
+	}
+}
+
+func TestParseConfig_rejectsUnknownFlags(t *testing.T) {
+	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	origArgs := os.Args
+	t.Cleanup(func() { os.Args = origArgs })
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"long unknown flag", []string{"age", "decrypt", "--bogus"}},
+		{"short unknown flag", []string{"age", "decrypt", "-x"}},
+		{"unknown flag before path", []string{"age", "decrypt", "--nope", "/repo"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Args = tc.args
+			_, err := parseConfig()
+			if err == nil {
+				t.Fatalf("parseConfig(%v) = nil error, want unknown-flag error", tc.args)
+			}
+			if !strings.Contains(err.Error(), "unknown flag") {
+				t.Errorf("error = %q, want containing 'unknown flag'", err.Error())
+			}
+		})
+	}
+}
+
+// TestParseConfig_extRejectsEmptyValue asserts that an empty --ext value is
+// rejected rather than silently coerced to the bare "." suffix. That suffix
+// matches almost no files, so the decrypt pass would no-op yet still exit 0 --
+// defeating the deploy gate that keys on the exit code. Both the equals form
+// ("--ext=") and the space form with an explicit empty argument (`--ext ""`)
+// route through normalizeExt and must error. Complements
+// TestParseConfig_extRequiresValue, which covers only the trailing bare --ext.
+func TestParseConfig_extRejectsEmptyValue(t *testing.T) {
+	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"equals form", []string{"age", "decrypt", "--ext="}},
+		{"space form", []string{"age", "decrypt", "--ext", ""}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Args = tc.args
+			_, err := parseConfig()
+			if err == nil || !strings.Contains(err.Error(), "requires") {
+				t.Errorf("parseConfig(%v) = err %v, want one containing 'requires'", tc.args, err)
 			}
 		})
 	}

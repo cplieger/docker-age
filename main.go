@@ -104,13 +104,12 @@ func runDecrypt(ctx context.Context, cfg *config, identities []age.Identity) int
 	}
 
 	// Must specify what to decrypt.
-	extensions := cfg.Extensions
-	if len(extensions) == 0 && len(cfg.Targets) == 0 {
+	if len(cfg.Extensions) == 0 && len(cfg.Targets) == 0 {
 		slog.Error("decrypt requires at least one of: --ext, a target path, or '-' for stdin")
 		return 1
 	}
 
-	// Determine walk roots
+	// Determine walk roots: explicit targets, else the configured repo root.
 	roots := cfg.Targets
 	if len(roots) == 0 {
 		roots = []string{cfg.RepoRoot}
@@ -118,30 +117,11 @@ func runDecrypt(ctx context.Context, cfg *config, identities []age.Identity) int
 
 	var totalResult decryptResult
 	for _, root := range roots {
-		info, err := os.Stat(root)
+		result, err := decryptRoot(ctx, root, identities, cfg.Extensions)
 		if err != nil {
-			slog.Error("target not accessible", "path", root, "error", err)
-			return 1
-		}
-		if !info.IsDir() {
-			status := decryptSingleFile(ctx, root, identities)
-			switch status {
-			case fileDecrypted:
-				totalResult.Decrypted++
-			case fileFailed:
-				totalResult.Failed++
-			case fileSkipped:
-				totalResult.Skipped++
-				if ctx.Err() == nil {
-					slog.Info("named file is not age-encrypted, left unchanged", "path", root)
-				}
-			}
-			continue
-		}
-		result, err := decryptAll(ctx, root, identities, extensions)
-		if err != nil {
-			// decryptAll already logged the precise cause at Error
-			// ("cannot open repo root" or "repo root unreadable").
+			// decryptRoot/decryptAll already logged the precise cause at Error
+			// ("target not accessible", "cannot open repo root", or "repo root
+			// unreadable").
 			return 1
 		}
 		totalResult.Decrypted += result.Decrypted
@@ -176,6 +156,37 @@ func runDecrypt(ctx context.Context, cfg *config, identities []age.Identity) int
 		return 1
 	}
 	return 0
+}
+
+// decryptRoot processes one decrypt target. A non-directory is decrypted as a
+// single named file (a non-age file is a legitimate skip, logged once unless
+// the context was canceled mid-pass); a directory is walked by decryptAll. It
+// returns the per-target outcome counts, and a non-nil error only for a fatal
+// condition — the target is inaccessible, or its directory root is unreadable —
+// which must block the whole pass.
+func decryptRoot(ctx context.Context, root string, identities []age.Identity, extensions []string) (decryptResult, error) {
+	info, err := os.Stat(root)
+	if err != nil {
+		slog.Error("target not accessible", "path", root, "error", err)
+		return decryptResult{}, err
+	}
+	if info.IsDir() {
+		return decryptAll(ctx, root, identities, extensions)
+	}
+
+	var result decryptResult
+	switch decryptSingleFile(ctx, root, identities) {
+	case fileDecrypted:
+		result.Decrypted++
+	case fileFailed:
+		result.Failed++
+	case fileSkipped:
+		result.Skipped++
+		if ctx.Err() == nil {
+			slog.Info("named file is not age-encrypted, left unchanged", "path", root)
+		}
+	}
+	return result, nil
 }
 
 // decryptSingleFile decrypts one explicitly-named file in place.
