@@ -294,6 +294,63 @@ func matchesAnyExt(name string, extensions []string) bool {
 // orphaned decrypt temp files (any name ending in tmpSuffix) in the same pass.
 // Returns per-outcome counts and an error only when the root itself cannot
 // be opened.
+// treeWalk carries the mutable accounting for a single decryptAll pass so the
+// per-entry visitor can be a named method (treeWalk.visit) rather than a
+// deeply nested closure — the closure nesting was what pushed decryptAll's
+// cognitive complexity past the ceiling even though each branch is simple.
+//
+// Pointer-bearing fields are grouped first to satisfy govet's fieldalignment
+// (it keeps the GC pointer-scan range minimal); the layout is otherwise
+// immaterial since decryptAll builds the value with keyed fields.
+type treeWalk struct {
+	ctx            context.Context
+	rootWalkErr    error
+	rootDir        *os.Root
+	root           string
+	identities     []age.Identity
+	extensions     []string
+	result         decryptResult
+	staleThreshold time.Duration
+	orphansRemoved int
+	canceled       bool
+}
+
+// visit is the filepath.WalkDir callback for one tree entry: it honors context
+// cancellation, records walk errors, reclaims orphaned decrypt temps, and
+// decrypts matching candidates, folding every outcome into w.
+func (w *treeWalk) visit(path string, d fs.DirEntry, walkErr error) error {
+	if w.ctx.Err() != nil {
+		w.canceled = true
+		return filepath.SkipAll
+	}
+	if walkErr != nil {
+		if recordWalkError(&w.result, w.root, path, walkErr) {
+			w.rootWalkErr = fmt.Errorf("walk root %s: %w", w.root, walkErr)
+			return filepath.SkipAll
+		}
+		return nil
+	}
+	if !d.Type().IsRegular() {
+		return nil
+	}
+	rel, relErr := filepath.Rel(w.root, path)
+	if relErr != nil {
+		return nil
+	}
+	// Reclaim an orphaned decrypt temp in the same walk.
+	if isOrphanTmpFile(d.Name()) {
+		if sweepOrphanTmpFile(w.rootDir, rel, w.staleThreshold) {
+			w.orphansRemoved++
+		}
+		return nil
+	}
+	// Decrypt a matching candidate (extension filter, or all when empty).
+	if matchesAnyExt(d.Name(), w.extensions) {
+		recordDecryptOutcome(&w.result, decryptFile(w.ctx, w.rootDir, rel, w.identities))
+	}
+	return nil
+}
+
 func decryptAll(ctx context.Context, root string, identities []age.Identity, extensions []string) (decryptResult, error) {
 	rootDir, err := os.OpenRoot(root)
 	if err != nil {
@@ -302,71 +359,50 @@ func decryptAll(ctx context.Context, root string, identities []age.Identity, ext
 	}
 	defer func() { _ = rootDir.Close() }()
 
-	const staleThreshold = 10 * time.Minute
-	var result decryptResult
-	var orphansRemoved int
-
-	var rootWalkErr error
-	canceled := false
-	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-		if ctx.Err() != nil {
-			canceled = true
-			return filepath.SkipAll
-		}
-		if walkErr != nil {
-			if path == root {
-				slog.Error("repo root unreadable", "root", root, "error", walkErr)
-				rootWalkErr = fmt.Errorf("walk root %s: %w", root, walkErr)
-				return filepath.SkipAll
-			}
-			slog.Warn("walk error", "path", path, "error", walkErr)
-			result.WalkErrors++
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-
-		name := d.Name()
-
-		// Handle orphan tmp files in the same walk.
-		if isOrphanTmpFile(name) {
-			rel, relErr := filepath.Rel(root, path)
-			if relErr != nil {
-				return nil
-			}
-			if sweepOrphanTmpFile(rootDir, rel, staleThreshold) {
-				orphansRemoved++
-			}
-			return nil
-		}
-
-		// Process files for decryption (extension filter or all).
-		if !matchesAnyExt(name, extensions) {
-			return nil
-		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			return nil
-		}
-		switch decryptFile(ctx, rootDir, rel, identities) {
-		case fileDecrypted:
-			result.Decrypted++
-		case fileFailed:
-			result.Failed++
-		case fileSkipped:
-			result.Skipped++
-		}
-		return nil
-	})
-
-	if rootWalkErr != nil {
-		return result, rootWalkErr
+	w := &treeWalk{
+		ctx:            ctx,
+		root:           root,
+		rootDir:        rootDir,
+		identities:     identities,
+		extensions:     extensions,
+		staleThreshold: 10 * time.Minute,
 	}
-	if canceled {
+	_ = filepath.WalkDir(root, w.visit)
+
+	if w.rootWalkErr != nil {
+		return w.result, w.rootWalkErr
+	}
+	if w.canceled {
 		slog.Error("decryption canceled before completing the tree", "root", root, "error", ctx.Err())
-		return result, fmt.Errorf("decryption canceled: %w", ctx.Err())
+		return w.result, fmt.Errorf("decryption canceled: %w", ctx.Err())
 	}
-	slog.Debug("orphan tmp sweep complete", "removed", orphansRemoved)
-	return result, nil
+	slog.Debug("orphan tmp sweep complete", "removed", w.orphansRemoved)
+	return w.result, nil
+}
+
+// recordWalkError logs and accounts for an error reported by the tree walk.
+// An error reading the root itself is fatal — the whole tree is unreadable
+// (e.g. a stale mount), so it returns true to abort the pass. Any deeper
+// per-entry error is logged, counted in WalkErrors, and tolerated (returns
+// false) so a single unreadable subdir does not abort the rest of the walk.
+func recordWalkError(result *decryptResult, root, path string, walkErr error) bool {
+	if path == root {
+		slog.Error("repo root unreadable", "root", root, "error", walkErr)
+		return true
+	}
+	slog.Warn("walk error", "path", path, "error", walkErr)
+	result.WalkErrors++
+	return false
+}
+
+// recordDecryptOutcome folds a single decryptFile result into the running totals.
+func recordDecryptOutcome(result *decryptResult, status fileStatus) {
+	switch status {
+	case fileDecrypted:
+		result.Decrypted++
+	case fileFailed:
+		result.Failed++
+	case fileSkipped:
+		result.Skipped++
+	}
 }
