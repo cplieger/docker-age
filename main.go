@@ -8,6 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	// Embed the IANA tz database so TZ (default Europe/Paris) is honored even
+	// though the distroless static base ships no /usr/share/zoneinfo; without
+	// it time.Local silently falls back to UTC.
+	_ "time/tzdata"
 
 	"filippo.io/age"
 	"github.com/cplieger/health"
