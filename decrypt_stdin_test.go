@@ -39,6 +39,15 @@ func TestDecryptStream(t *testing.T) {
 	// Age-headed bytes one over the input cap: trips the maxEncryptedSize
 	// guard before any decrypt is attempted.
 	oversizedInput := append([]byte(ageHeader), bytes.Repeat([]byte("X"), maxEncryptedSize+1)...)
+	// Plaintext exactly at the output cap: the limit is inclusive, so this must
+	// decrypt and be written back in full. The oversized-output case above
+	// covers one byte over (rejected); pairing it with this exact-limit case
+	// pins the boundary as inclusive rather than off-by-one.
+	atCapPlaintext := bytes.Repeat([]byte("A"), maxDecryptedSize)
+	atCapOutput, err := encryptArmored(atCapPlaintext, id.Recipient())
+	if err != nil {
+		t.Fatalf("encrypt at-cap output: %v", err)
+	}
 
 	tests := []struct {
 		name     string
@@ -53,6 +62,7 @@ func TestDecryptStream(t *testing.T) {
 		{"wrong key fails", wrongKey, nil, 1},
 		{"oversized input rejected", oversizedInput, nil, 1},
 		{"oversized output rejected", oversizedOutput, nil, 1},
+		{"output exactly at cap accepted", atCapOutput, atCapPlaintext, 0},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
