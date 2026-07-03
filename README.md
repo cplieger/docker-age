@@ -3,7 +3,6 @@
 [![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/size.json)](https://github.com/cplieger/docker-age/pkgs/container/docker-age)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: distroless static](https://img.shields.io/badge/base-distroless%2Fstatic-2496ED?logo=docker)
-[![Go Report Card](https://goreportcard.com/badge/github.com/cplieger/docker-age)](https://goreportcard.com/report/github.com/cplieger/docker-age)
 [![Test coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/coverage.json)](https://github.com/cplieger/docker-age/actions/workflows/coverage.yml)
 [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/mutation.json)](https://github.com/cplieger/docker-age/issues?q=label%3Agremlins-tracker)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13202/badge)](https://www.bestpractices.dev/projects/13202)
@@ -23,7 +22,7 @@ The `age-decrypt` binary is a single static Go executable on `gcr.io/distroless/
 - `decrypt -` — pipe: stdin ciphertext in, stdout plaintext out
 - `health` — file-based health probe for Docker `HEALTHCHECK`
 
-The `decrypt` subcommand always requires you to say **what** to decrypt (an extension filter, a path, or `-`). Server mode (no subcommand) is the always-on container entrypoint — it idles and serves as a `docker exec` target; it does not decrypt anything on its own.
+The `decrypt` subcommand always requires you to say **what** to decrypt (an extension filter, a path, or `-`). Server mode (no subcommand) is the always-on container entrypoint that idles as a `docker exec` target (see the Server mode note under [Subcommands](#subcommands) for details).
 
 ### Why this design
 
@@ -49,10 +48,9 @@ The expected workflow is encryption-at-rest in git, decryption at deploy:
    ```
 
 2. Commit `apps/myservice/.env` (encrypted, ASCII-armored) to git. `.env.dec` stays local.
-3. On each server, run `age-decrypt` as an always-on container. It idles as a
-   long-lived `docker exec` target and does **not** decrypt anything on its own.
-   Your deploy triggers a fresh pass before the stack starts with
-   `docker exec age /age-decrypt decrypt --ext .env`:
+3. On each server, run `age-decrypt` as an always-on container (see the Server
+   mode note below). Your deploy triggers a fresh pass before the stack starts
+   with `docker exec age /age-decrypt decrypt --ext .env`:
 
 ```yaml
 services:
@@ -80,11 +78,11 @@ Trigger a decrypt pass on demand (no restart needed):
 docker exec age /age-decrypt decrypt --ext .env
 ```
 
-> **Re-cloning orchestrators (e.g. Komodo):** if your deploy tool replaces the
-> repo directory on each sync (a new inode, not an in-place `git pull`), a
-> container mounting that directory sees a stale mount. Mount the stable
-> **parent** at `/repo` and set `AGE_REPO_ROOT=/repo/<repo-name>` so the walk
-> re-resolves the child on every pass.
+> **Re-cloning orchestrators:** if your deploy tool replaces the repo directory
+> (a new inode) on each sync, a container mounting that directory sees a stale
+> mount. Mount the stable **parent** at `/repo` and set
+> `AGE_REPO_ROOT=/repo/<repo-name>` so the walk re-resolves the child on every
+> pass.
 
 Or as a fire-and-forget one-shot before deploy (no long-running container):
 
@@ -150,7 +148,7 @@ This means you can mix encrypted and plaintext files in the same tree, and re-ru
 
 ## Healthcheck
 
-`age-decrypt health` reads `/tmp/.healthy`. In **server mode** the marker is set healthy the moment the container starts (it just idles — there is no startup action that can fail) and stays healthy for as long as the process is alive; it is removed on shutdown. So the marker reflects process **liveness** — it lets Docker detect and restart a crashed server — **not** decrypt outcome. A `decrypt` invocation does not touch the marker; its success or failure is reported by its **exit code** (non-zero on any failure, including an unreadable repo root). That non-zero exit is the loud, deploy-blocking signal — wire your `pre_deploy` step to fail on it. The baked healthcheck targets the long-running server, so the always-on setup above uses it as-is. If you instead run a one-shot `decrypt` container (the `docker run --rm` form above), disable the healthcheck (`healthcheck: {disable: true}` in compose) since the one-shot exits without ever running the server that writes the marker. The standard distroless `HEALTHCHECK` uses CMD form (no shell needed):
+`age-decrypt health` reads `/tmp/.healthy`. In **server mode** the marker is set healthy the moment the container starts and stays healthy for as long as the process is alive; it is removed on shutdown. So the marker reflects process **liveness** — it lets Docker detect and restart a crashed server — **not** decrypt outcome. A `decrypt` invocation does not touch the marker; its success or failure is reported by its **exit code** (non-zero on any failure, including an unreadable repo root). That non-zero exit is the loud, deploy-blocking signal — wire your `pre_deploy` step to fail on it. The baked healthcheck targets the long-running server, so the always-on setup above uses it as-is. If you instead run a one-shot `decrypt` container (the `docker run --rm` form above), disable the healthcheck (`healthcheck: {disable: true}` in compose) since the one-shot exits without ever running the server that writes the marker. The standard distroless `HEALTHCHECK` uses CMD form (no shell needed):
 
 ```dockerfile
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
@@ -198,7 +196,7 @@ Issues and pull requests are welcome. Please open an issue first for larger chan
 
 ## Disclaimer
 
-This image is built with care and follows security best practices, but it is intended for **homelab use**. No guarantees of fitness for production environments. Use at your own risk.
+This project is built with care and follows security best practices, but it is intended for personal / self-hosted use. No guarantees of fitness for production environments. Use at your own risk.
 
 This project was built with AI-assisted tooling using [Claude Opus](https://www.anthropic.com/claude) and [Kiro](https://kiro.dev). The human maintainer defines architecture, supervises implementation, and makes all final decisions.
 
