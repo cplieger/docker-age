@@ -50,10 +50,10 @@ func TestParseConfig(t *testing.T) {
 			name:         "explicit repo root honored",
 			args:         []string{"age-decrypt", "decrypt"},
 			keyFile:      "/age/keys.txt",
-			repoRoot:     "/repo/homelab",
+			repoRoot:     "/repo/app",
 			wantMode:     "decrypt",
 			wantKeyFile:  "/age/keys.txt",
-			wantRepoRoot: "/repo/homelab",
+			wantRepoRoot: "/repo/app",
 		},
 		{
 			name:    "unknown subcommand returns error",

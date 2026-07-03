@@ -1,6 +1,6 @@
 # Security assurance case — docker-age
 
-This extends the fleet-wide
+This extends the shared
 [default assurance case](https://github.com/cplieger/.github/blob/main/assurance-case.md)
 with the threat model specific to `docker-age`. Read that first.
 
@@ -36,7 +36,7 @@ home-grown crypto. The age identity is provided at runtime and never logged.
 ## Residual risks
 
 - Security depends on the age private key staying confidential; key custody is a
-  deployment concern (documented in the homelab secrets handling).
+  deployment concern (documented in the deployment's secrets handling).
 - Decrypted `.env` files are plaintext on disk by design (consumed immediately
   by `docker compose up`); their lifetime/permissions are a deployment concern.
 

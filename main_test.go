@@ -475,7 +475,7 @@ func TestWarnIfNoFilesSeen_warns_only_when_no_files_seen(t *testing.T) {
 			prev := slog.Default()
 			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 			t.Cleanup(func() { slog.SetDefault(prev) })
-			warnIfNoFilesSeen(tt.result, "/repo/homelab", tt.targets)
+			warnIfNoFilesSeen(tt.result, "/repo/app", tt.targets)
 			out := buf.String()
 			gotWarn := strings.Contains(out, "no matching files found")
 			if gotWarn != tt.wantWarn {
