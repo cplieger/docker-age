@@ -8,10 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	// Embed the IANA tz database so TZ (default Europe/Paris) is honored even
-	// though the distroless static base ships no /usr/share/zoneinfo; without
-	// it time.Local silently falls back to UTC.
-	_ "time/tzdata"
 
 	"filippo.io/age"
 	"github.com/cplieger/health"
@@ -24,7 +20,7 @@ func main() {
 	}
 
 	level := logLevel()
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level, ReplaceAttr: utcTimeAttr})))
 
 	cfg, err := parseConfig()
 	if err != nil {
@@ -32,7 +28,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})).With("mode", cfg.Mode))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level, ReplaceAttr: utcTimeAttr})).With("mode", cfg.Mode))
 	os.Exit(run(&cfg))
 }
 
@@ -222,4 +218,16 @@ func warnIfNoFilesSeen(result decryptResult, repoRoot string, targets []string) 
 	}
 	slog.Warn("no matching files found under the named target(s); check the path and --ext",
 		"targets", targets)
+}
+
+// utcTimeAttr is a slog ReplaceAttr that renders the record's built-in time
+// key in UTC, so log-line timestamps are zone-stable regardless of the
+// container's TZ (the fleet logs-in-UTC standard). It rewrites only the
+// top-level time attribute; a user attribute that happens to share the "time"
+// key inside a group is left untouched.
+func utcTimeAttr(groups []string, a slog.Attr) slog.Attr {
+	if len(groups) == 0 && a.Key == slog.TimeKey && a.Value.Kind() == slog.KindTime {
+		a.Value = slog.TimeValue(a.Value.Time().UTC())
+	}
+	return a
 }
