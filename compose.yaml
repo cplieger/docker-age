@@ -8,7 +8,6 @@ services:
     restart: unless-stopped  # always-on: stays up between deploys as an exec target
 
     environment:
-      TZ: "Europe/Paris"
       AGE_KEY_FILE: "/age/keys.txt"  # required; age identity file
 
     volumes:
