@@ -151,6 +151,9 @@ docker build -t age-decrypt .
   fix.
 - CI (`.github/workflows/ci.yaml`) is synced from `cplieger/ci` — don't
   edit it locally; changes land upstream.
+- Logs are UTC: a `utcTimeAttr` slog `ReplaceAttr` forces every record's
+  timestamp to UTC, so the container needs no `TZ` and the binary embeds
+  no `time/tzdata`.
 
 ## Commits & PRs
 
