@@ -16,7 +16,7 @@ import (
 // Tests for main.go's dispatch and reporting layer: the single-file entry
 // point (decryptSingleFile), the decrypt orchestrator (runDecrypt) across its
 // pipe / target / walk modes and deploy-gate exit codes, the idle server
-// (runServer), and the log/level helpers (logLevel, logDecryptResult,
+// (runServer), and the reporting helpers (logDecryptResult,
 // warnIfNoFilesSeen). Shared builders live in helpers_test.go.
 
 // --- decryptSingleFile ---
@@ -396,36 +396,6 @@ func TestRunServer_exits_zero_on_signal(t *testing.T) {
 	code := runServer(ctx)
 	if code != 0 {
 		t.Errorf("runServer(canceled ctx) = %d, want 0", code)
-	}
-}
-
-// --- logLevel ---
-
-// TestLogLevel maps AGE_LOG_LEVEL to a slog.Level, defaulting to Info for an
-// unset, empty, or unrecognized value (the safe deploy-gate default) and
-// accepting the level names case-insensitively.
-func TestLogLevel(t *testing.T) {
-	tests := []struct {
-		name string
-		env  string
-		want slog.Level
-	}{
-		{name: "unset/empty", env: "", want: slog.LevelInfo},
-		{name: "debug", env: "debug", want: slog.LevelDebug},
-		{name: "debug uppercase", env: "DEBUG", want: slog.LevelDebug},
-		{name: "info", env: "info", want: slog.LevelInfo},
-		{name: "warn", env: "warn", want: slog.LevelWarn},
-		{name: "warning alias", env: "warning", want: slog.LevelWarn},
-		{name: "error", env: "error", want: slog.LevelError},
-		{name: "unrecognized falls back to info", env: "loud", want: slog.LevelInfo},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("AGE_LOG_LEVEL", tc.env)
-			if got := logLevel(); got != tc.want {
-				t.Errorf("logLevel() with AGE_LOG_LEVEL=%q = %v, want %v", tc.env, got, tc.want)
-			}
-		})
 	}
 }
 
