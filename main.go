@@ -6,11 +6,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"filippo.io/age"
 	"github.com/cplieger/health"
+	"github.com/cplieger/slogx"
 )
 
 func main() {
@@ -19,8 +19,12 @@ func main() {
 		health.RunProbe(health.DefaultPath)
 	}
 
-	level := logLevel()
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level, ReplaceAttr: utcTimeAttr})))
+	rawLevel := os.Getenv("AGE_LOG_LEVEL")
+	lvl, ok := slogx.ParseLevel(rawLevel, slog.LevelInfo)
+	slogx.Setup(slogx.Options{Level: lvl})
+	if !ok {
+		slog.Warn("invalid AGE_LOG_LEVEL, using default", "value", rawLevel, "default", "info")
+	}
 
 	cfg, err := parseConfig()
 	if err != nil {
@@ -28,7 +32,11 @@ func main() {
 		os.Exit(2)
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level, ReplaceAttr: utcTimeAttr})).With("mode", cfg.Mode))
+	// slogx.Setup installed the plain UTC text handler on stderr as the
+	// default; re-wrap it with the run mode so every subsequent line carries
+	// the mode attribute (config-parse errors above are logged before the mode
+	// is known, matching the pre-slogx two-phase setup).
+	slog.SetDefault(slog.Default().With("mode", cfg.Mode))
 	os.Exit(run(&cfg))
 }
 
@@ -57,24 +65,6 @@ func run(cfg *config) int {
 	// precisely when an operator needs it. All decryption is triggered
 	// explicitly via exec.
 	return runServer(ctx)
-}
-
-// logLevel reads AGE_LOG_LEVEL (debug|info|warn|error, case-insensitive) and
-// maps it to a slog.Level, defaulting to Info. An unset or unrecognized value
-// keeps Info — the safe default for the deploy gate. Set AGE_LOG_LEVEL=debug to
-// surface the per-file "not age-encrypted, skipping" and orphan-sweep lines
-// when triaging why a pass decrypted nothing.
-func logLevel() slog.Level {
-	switch strings.ToLower(os.Getenv("AGE_LOG_LEVEL")) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn", "warning":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
 }
 
 // runServer idles as PID 1 with a healthy marker, waiting for SIGINT/SIGTERM.
@@ -218,16 +208,4 @@ func warnIfNoFilesSeen(result decryptResult, repoRoot string, targets []string) 
 	}
 	slog.Warn("no matching files found under the named target(s); check the path and --ext",
 		"targets", targets)
-}
-
-// utcTimeAttr is a slog ReplaceAttr that renders the record's built-in time
-// key in UTC, so log-line timestamps are zone-stable regardless of the
-// container's TZ (the fleet logs-in-UTC standard). It rewrites only the
-// top-level time attribute; a user attribute that happens to share the "time"
-// key inside a group is left untouched.
-func utcTimeAttr(groups []string, a slog.Attr) slog.Attr {
-	if len(groups) == 0 && a.Key == slog.TimeKey && a.Value.Kind() == slog.KindTime {
-		a.Value = slog.TimeValue(a.Value.Time().UTC())
-	}
-	return a
 }
