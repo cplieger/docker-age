@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/cplieger/envx"
 )
 
 type config struct {
@@ -46,15 +48,12 @@ func parseConfig() (config, error) {
 		}
 	}
 
-	keyFile := os.Getenv("AGE_KEY_FILE")
-	if keyFile == "" {
-		return config{}, errors.New("AGE_KEY_FILE environment variable is required")
+	keyFile, err := envx.Require("AGE_KEY_FILE")
+	if err != nil {
+		return config{}, err
 	}
 
-	repoRoot := os.Getenv("AGE_REPO_ROOT")
-	if repoRoot == "" {
-		repoRoot = "/repo"
-	}
+	repoRoot := envx.String("AGE_REPO_ROOT", "/repo")
 
 	return config{
 		KeyFile:    keyFile,
