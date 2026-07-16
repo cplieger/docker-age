@@ -6,9 +6,11 @@
 # build-ability gate executes it on every PR and push (the final stage depends
 # on this stage's /tests-passed marker). Asserts the real, high-value failure
 # mode for this image: that the freshly built age-decrypt binary actually
-# DECRYPTS age ciphertext end to end. A broken build means the homelab's
-# deploy-time secrets step (`docker exec age /age-decrypt decrypt --ext .env`)
-# decrypts nothing and every deploy fails, so "it decrypts" is worth proving.
+# DECRYPTS age ciphertext end to end — a `.env.enc` source produced with the
+# upstream CLI comes back as the sibling `.env` plaintext, with the ciphertext
+# source untouched. A broken build means the homelab's deploy-time secrets
+# step (`docker exec age /age-decrypt decrypt --ext .env`) decrypts nothing
+# and every deploy fails, so "it decrypts" is worth proving.
 #
 # age-decrypt is decrypt-only (no keygen/encrypt subcommand), so the fixture is
 # MINTED at build time with the upstream `age`/`age-keygen` CLIs rather than
@@ -60,20 +62,25 @@ fi
 # assertion is only that decrypt returns exactly what was encrypted.
 plaintext='SMOKE_CHECK=round-trip-ok'
 
-# 1. In-place tree decrypt: the exact command the homelab deploy runs
-#    (`age-decrypt decrypt --ext .env <dir>`), against a BINARY-format fixture.
-#    Encrypt to a .env under a subtree, decrypt the tree in place, and assert
-#    the file now holds the original plaintext.
+# 1. Tree decrypt to the sibling: the exact command the homelab deploy runs
+#    (`age-decrypt decrypt --ext .env <dir>`), against a BINARY-format
+#    `.env.enc` source under a subtree. Assert the sibling `.env` holds the
+#    original plaintext AND the ciphertext source is byte-identical afterward.
 repo="$work/repo"
 mkdir -p "$repo"
-if ! printf '%s' "$plaintext" | age --encrypt --recipient "$recipient" --output "$repo/secret.env"; then
-  err "FAIL: could not create the binary-format .env fixture"
+if ! printf '%s' "$plaintext" | age --encrypt --recipient "$recipient" --output "$repo/secret.env.enc"; then
+  err "FAIL: could not create the binary-format .env.enc fixture"
   exit 1
 fi
+cp "$repo/secret.env.enc" "$work/secret.env.enc.orig"
 if AGE_KEY_FILE="$key" "$bin" decrypt --ext .env "$repo" 2>"$work/err1"; then
   got=$(cat "$repo/secret.env")
   if [ "$got" != "$plaintext" ]; then
-    err "FAIL: in-place decrypt did not restore the expected plaintext (got: $got)"
+    err "FAIL: sibling decrypt did not produce the expected plaintext (got: $got)"
+    fail=1
+  fi
+  if ! cmp -s "$repo/secret.env.enc" "$work/secret.env.enc.orig"; then
+    err "FAIL: the ciphertext source was modified by the decrypt pass"
     fail=1
   fi
 else
@@ -105,6 +112,42 @@ fi
 #    (a bare "binary is present" check would be a tautology).
 if printf 'this is not age ciphertext\n' | AGE_KEY_FILE="$key" "$bin" decrypt - >/dev/null 2>&1; then
   err "FAIL: 'age-decrypt decrypt -' accepted non-age input (expected non-zero exit)"
+  fail=1
+fi
+
+# 4. Negative: stray ciphertext at a plaintext path (an un-migrated secret)
+#    must fail the pass. The deploy reads plaintext at that exact path, so a
+#    zero exit here would let a deploy proceed against ciphertext.
+stray="$work/stray-repo"
+mkdir -p "$stray"
+if ! printf '%s' "$plaintext" | age --encrypt --recipient "$recipient" --output "$stray/legacy.env"; then
+  err "FAIL: could not create the stray-ciphertext fixture"
+  exit 1
+fi
+if AGE_KEY_FILE="$key" "$bin" decrypt --ext .env "$stray" >/dev/null 2>&1; then
+  err "FAIL: stray ciphertext at legacy.env did not fail the pass (expected non-zero exit)"
+  fail=1
+fi
+
+# 5. Negative: a plaintext payload under a .enc name is a broken encrypt
+#    workflow and must fail the pass rather than be copied through or ignored.
+plainenc="$work/plainenc-repo"
+mkdir -p "$plainenc"
+printf 'NOT=encrypted\n' >"$plainenc/broken.env.enc"
+if AGE_KEY_FILE="$key" "$bin" decrypt --ext .env "$plainenc" >/dev/null 2>&1; then
+  err "FAIL: plaintext under broken.env.enc did not fail the pass (expected non-zero exit)"
+  fail=1
+fi
+
+# 6. Negative: malformed .enc names fail before --ext filtering. Neither a
+#    bare .enc nor a double .enc.enc may disappear behind an output filter and
+#    yield a clean zero-work exit.
+invalidnames="$work/invalid-name-repo"
+mkdir -p "$invalidnames"
+printf 'invalid\n' >"$invalidnames/.enc"
+printf 'invalid\n' >"$invalidnames/app.env.enc.enc"
+if AGE_KEY_FILE="$key" "$bin" decrypt --ext .env "$invalidnames" >/dev/null 2>&1; then
+  err "FAIL: malformed .enc names were hidden by --ext (expected non-zero exit)"
   fail=1
 fi
 

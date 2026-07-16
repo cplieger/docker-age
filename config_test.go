@@ -218,3 +218,68 @@ func TestParseConfig_extRejectsEmptyValue(t *testing.T) {
 		})
 	}
 }
+
+// TestParseConfig_extRejectsEncSuffix pins the v3 filter contract: --ext
+// names the decrypted OUTPUT suffix, so a value ending in .enc (which would
+// select .enc.enc sources and silently match nothing) is rejected with a
+// pointer to the correct form. The bare ".enc" gets the redundancy message
+// instead.
+func TestParseConfig_extRejectsEncSuffix(t *testing.T) {
+	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	origArgs := os.Args
+	t.Cleanup(func() { os.Args = origArgs })
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantPart string
+	}{
+		{"env.enc space form", []string{"age", "decrypt", "--ext", ".env.enc"}, "--ext .env"},
+		{"env.enc equals form", []string{"age", "decrypt", "--ext=.env.enc"}, "--ext .env"},
+		{"missing dot still normalized then rejected", []string{"age", "decrypt", "--ext", "env.enc"}, "--ext .env"},
+		{"bare .enc rejected as redundant", []string{"age", "decrypt", "--ext", ".enc"}, "redundant"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Args = tc.args
+			_, err := parseConfig()
+			if err == nil || !strings.Contains(err.Error(), tc.wantPart) {
+				t.Errorf("parseConfig(%v) = err %v, want one containing %q", tc.args, err, tc.wantPart)
+			}
+		})
+	}
+}
+
+func TestParseConfig_rejects_pathlike_or_ambiguous_ext(t *testing.T) {
+	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	tests := map[string]string{
+		"env/path":  "filename suffix",
+		`env\\path`: "filename suffix",
+		".env ":     "whitespace",
+	}
+	for ext, wantPart := range tests {
+		t.Run(ext, func(t *testing.T) {
+			os.Args = []string{"age", "decrypt", "--ext", ext}
+			_, err := parseConfig()
+			if err == nil || !strings.Contains(err.Error(), wantPart) {
+				t.Errorf("parseConfig(--ext %q) = %v, want error containing %q", ext, err, wantPart)
+			}
+		})
+	}
+}
+
+func TestParseConfig_rejects_stdin_combinations(t *testing.T) {
+	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	tests := map[string][]string{
+		"stdin with extension": {"age", "decrypt", "--ext", ".env", "-"},
+		"stdin with file":      {"age", "decrypt", "-", "/tmp/file.env.enc"},
+	}
+	for name, args := range tests {
+		t.Run(name, func(t *testing.T) {
+			os.Args = args
+			if _, err := parseConfig(); err == nil {
+				t.Errorf("parseConfig(%v) = nil error, want incompatible-stdin error", args)
+			}
+		})
+	}
+}

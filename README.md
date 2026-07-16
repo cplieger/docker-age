@@ -9,16 +9,16 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/docker-age/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/docker-age)
 [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/docker-age/releases)
 
-Decrypt [age](https://github.com/FiloSottile/age)-encrypted files in place at deploy time so your orchestrator can read them as plaintext — `.env` files, any other config, or a single file piped through stdin/stdout.
+Decrypt [age](https://github.com/FiloSottile/age)-encrypted `.enc` files to their plaintext siblings at deploy time so your orchestrator can read them — `.env` files, any other config, or a single file piped through stdin/stdout. Ciphertext stays tracked in git; plaintext is generated next to it and never committed.
 
 ## What it does
 
-Walks a mounted directory tree (or a single file you name), finds everything that's age-encrypted (binary or armored), and rewrites it in place with its decrypted plaintext. Files that aren't age-encrypted are left untouched (idempotent). An `--ext` filter narrows a walk by suffix (e.g. `--ext .env`); a `-` target switches to a stdin→stdout pipe for a single file. Designed to run as a `pre_deploy` step before `docker compose up` reads the files.
+Walks a mounted directory tree (or a single `.enc` file you name), finds every `<name>.enc` ciphertext source (binary or armored age format), and atomically writes its decrypted plaintext to the sibling `<name>` — `apps/x/.env.enc` becomes `apps/x/.env`. The source is never modified, so your working tree stays clean: `git pull` always applies rotated secrets, and the generated plaintext is just re-derived on the next pass. An `--ext` filter narrows a walk by the OUTPUT suffix (`--ext .env` selects `.env.enc` sources); a `-` target switches to a stdin→stdout pipe for a single file. Designed to run as a `pre_deploy` step before `docker compose up` reads the files.
 
 The `age-decrypt` binary is a single static Go executable on `gcr.io/distroless/static:nonroot`:
 
-- `decrypt --ext .env` — decrypt every `.env` file in `AGE_REPO_ROOT` (the deploy use case)
-- `decrypt /path` — decrypt a specific file or directory tree
+- `decrypt --ext .env` — decrypt every `.env.enc` in `AGE_REPO_ROOT` to its `.env` sibling (the deploy use case)
+- `decrypt /path` — decrypt a specific `.enc` file or every `.enc` source under a directory tree
 - `decrypt -` — pipe: stdin ciphertext in, stdout plaintext out
 - `health` — file-based health probe for Docker `HEALTHCHECK`
 
@@ -26,13 +26,14 @@ The `decrypt` subcommand always requires you to say **what** to decrypt (an exte
 
 ### Why this design
 
-- **In-place rewrites** — your compose file references `apps/<x>/.env` like usual; no separate plaintext path to track
+- **Ciphertext and plaintext are separate planes** — `<name>.enc` is tracked in git and never touched; `<name>` is generated and gitignored. Your compose file references `apps/<x>/.env` like usual, `git status` stays meaningful on live checkouts, and a `git pull` can never conflict with a decrypted secret (the failure mode of in-place rewriting, which v2 used)
+- **Fail-closed** — a `.enc` source that will not decrypt, an unreadable subtree, or stray age ciphertext sitting at a plaintext path (an un-migrated secret) all exit non-zero and block the deploy; ciphertext can never be silently consumed as config
 - **Multi-identity** — the key file may hold several identities (one per line); a file encrypted to any one of them decrypts, so key rotation is just adding the new key alongside the old
-- **Concurrency-safe** — multiple parallel invocations on the same tree won't collide. Tmp files are named with PID + a process-local atomic counter, and an orphan-tmp sweep with an age-bound threshold preserves in-flight peer writes
-- **Atomic** — write-temp-then-rename so a failed decrypt never leaves a half-written `.env`
-- **Symlink-safe** — uses `os.OpenRoot` to confine all I/O to the mounted tree (no escape via symlinks)
+- **Concurrency-safe** — multiple parallel invocations on the same stable tree won't collide. Each plaintext temp has a cryptographically random 128-bit name and is created with `O_EXCL`; an age-bound orphan sweep preserves in-flight peer writes
+- **Atomic** — write-temp-then-rename so a failed decrypt never leaves a half-written `.env`, and a source can never be corrupted (it is opened read-only)
+- **Scoped source reads** — a source must remain the same regular, single-link inode across rooted `Lstat`/open/`Lstat` checks, rejecting symlinks, hardlinks, FIFOs, devices, and directories; `os.OpenRoot` confines pathname resolution to the mounted tree. Rename never follows an output symlink, and under `--ext` any matching nonregular plaintext path fails the pass
 - **Distroless + nonroot** — minimal attack surface; no shell, no package manager, no extra binaries
-- **Bounded memory** — encrypted files capped at 10 MB, decrypted output capped at 1 MB (defense against decompression bombs and runaway inputs); decrypted plaintext is zeroed from memory once written
+- **Per-file bounds** — each encrypted input is capped at 10 MB and each decrypted output at 1 MB (defense against decompression bombs and runaway files); plaintext is zeroed from memory once written and published mode 0600
 - **File-based health marker** — works with Docker's no-shell distroless healthcheck (`HEALTHCHECK CMD ["/age-decrypt", "health"]`)
 
 ## Quick start
@@ -44,10 +45,12 @@ The expected workflow is encryption-at-rest in git, decryption at deploy:
 1. Encrypt your `.env` files locally:
 
    ```bash
-   age -a -R recipients.txt -o apps/myservice/.env apps/myservice/.env.dec
+   age -a -R recipients.txt -o apps/myservice/.env.enc apps/myservice/.env
    ```
 
-2. Commit `apps/myservice/.env` (encrypted, ASCII-armored) to git. `.env.dec` stays local.
+2. Commit `apps/myservice/.env.enc` (encrypted, ASCII-armored) and gitignore
+   the plaintext (`echo 'apps/*/.env' >> .gitignore` or equivalent). The
+   `.env` you edit locally is exactly the file your apps read after decrypt.
 3. On each server, run `age-decrypt` as an always-on container (see the Server
    mode note below). Your deploy triggers a fresh pass before the stack starts
    with `docker exec age /age-decrypt decrypt --ext .env`:
@@ -109,7 +112,7 @@ docker run --rm \
 | Mount   | Description                                                                      |
 | ------- | -------------------------------------------------------------------------------- |
 | `/age`  | Directory containing your age identity (`keys.txt`, mode 0600). Mount read-only. |
-| `/repo` | Repository tree containing the files to decrypt in place.                        |
+| `/repo` | Repository tree containing the `.enc` sources; plaintext siblings are generated in it. |
 
 ### Subcommands
 
@@ -121,30 +124,44 @@ docker run --rm \
 
 The `decrypt` subcommand requires **at least one** of: `--ext`, a target path, or `-`. Calling `decrypt` with no arguments is an error (nothing to do).
 
-| Input                             | Behavior                                                               |
-| --------------------------------- | ---------------------------------------------------------------------- |
-| `decrypt --ext .env`              | Walk `AGE_REPO_ROOT`, decrypt only files ending in `.env`              |
-| `decrypt --ext .env --ext .yaml`  | Walk `AGE_REPO_ROOT`, decrypt files ending in `.env` OR `.yaml`        |
-| `decrypt --ext .env /path/to/dir` | Walk the given directory (not `AGE_REPO_ROOT`), filter by `.env`       |
-| `decrypt /path/to/file.env`       | Decrypt that one file in place (no extension filter — explicit target) |
-| `decrypt /path/to/dir`            | Walk that directory, decrypt **all** age-formatted files (no filter)   |
-| `decrypt -`                       | Pipe: read ciphertext from stdin, write plaintext to stdout            |
-| `decrypt` (bare, no args)         | **Error** (exit 1) — you must specify what to decrypt                  |
-| `health`                          | Read `/tmp/.healthy` marker — exit 0 if healthy, 1 if not              |
+| Input                             | Behavior                                                                        |
+| --------------------------------- | ------------------------------------------------------------------------------- |
+| `decrypt --ext .env`              | Walk `AGE_REPO_ROOT`, decrypt every `*.env.enc` to its `.env` sibling           |
+| `decrypt --ext .env --ext .yaml`  | Walk `AGE_REPO_ROOT`, decrypt `*.env.enc` OR `*.yaml.enc` sources               |
+| `decrypt --ext .env /path/to/dir` | Walk the given directory (not `AGE_REPO_ROOT`), same filter                     |
+| `decrypt /path/to/file.env.enc`   | Decrypt that one source to `/path/to/file.env` (explicit target must be `.enc`) |
+| `decrypt /path/to/dir`            | Walk that directory, decrypt **all** `.enc` sources (no filter)                 |
+| `decrypt -`                       | Pipe: read ciphertext from stdin, write plaintext to stdout                     |
+| `decrypt` (bare, no args)         | **Error** (exit 1) — you must specify what to decrypt                           |
+| `health`                          | Read `/tmp/.healthy` marker — exit 0 if healthy, 1 if not                       |
 
-**`--ext` behavior:** when provided, only files whose name ends with the suffix are candidates. When omitted with an explicit path target, all age-formatted files in the target are decrypted. The dot is auto-prefixed if missing (`--ext env` = `--ext .env`).
+**`--ext` behavior:** the filter names the decrypted OUTPUT suffix — `--ext .env` selects `.env.enc` sources and produces `.env` files. The dot is auto-prefixed if missing (`--ext env` = `--ext .env`); values ending in `.enc`, containing `/` or `\\`, or carrying surrounding whitespace are rejected instead of becoming silent no-op filters. The same post-strip filter applies to an explicit file target: `decrypt --ext .env config.yaml.enc` skips that source because its output is `config.yaml`. `--ext` cannot be combined with stdin (`decrypt -`) because a byte stream has no output filename to filter. Under `--ext`, non-`.enc` paths matching the suffix are also checked: regular plaintext there is the expected steady state (a generated output from a previous pass, or a committed plaintext config) and is skipped, while **age ciphertext or a nonregular path at the plaintext name fails the pass**. Without `--ext`, only `.enc` files are considered and everything else is out of scope (a deliberately encrypted archive kept at rest never trips the guard).
 
 **Server mode** (no subcommand, the container's PID 1 entrypoint): starts up, marks itself healthy, and **idles**. No startup decrypt — all decryption is triggered explicitly via `docker exec age /age-decrypt decrypt --ext .env` (or any other `decrypt` invocation). The container stays alive as a long-lived exec target; the health marker is always healthy while the process is running. Use `restart: unless-stopped` in compose so it recovers from OOM/crashes.
 
 ## File-format detection
 
-Each candidate file is inspected by its first bytes:
+Each `.enc` source is inspected by its first bytes:
 
 - **Armored age** (`-----BEGIN AGE ENCRYPTED FILE-----`) — decrypted via `age/armor`
 - **Binary age** (`age-encryption.org/v1`) — decrypted directly
-- **Anything else** — treated as already-plaintext and skipped silently
+- **Anything else** — a **failure** (exit non-zero): a `.enc` file that is not age ciphertext means a broken encrypt workflow, and silently passing it through would hide that
 
-This means you can mix encrypted and plaintext files in the same tree, and re-running `decrypt` is idempotent (a previously-decrypted file will be skipped on the next pass).
+Mixing encrypted and plaintext files in the same tree is fine: plaintext lives at the plain name, ciphertext at the `.enc` name. Re-running `decrypt` is idempotent in outcome — every pass re-derives the same plaintext siblings from the same sources (a rotated `.enc` simply produces the new plaintext on the next pass).
+
+Two source names are rejected up front, before any decryption: a bare `.enc` (no output name) and a double-suffixed `<x>.enc.enc` (its output would itself look like a ciphertext source and poison the next pass).
+
+## Migrating from v2 (in-place model)
+
+v2 rewrote ciphertext files in place (`apps/x/.env` was tracked ciphertext that became plaintext on the server). v3 flips the layout: ciphertext moves to `apps/x/.env.enc` and the plaintext `.env` is generated. To migrate a repo:
+
+1. Rename every tracked ciphertext file: `git mv apps/x/.env apps/x/.env.enc` (repeat per file; plaintext configs that were never encrypted stay put).
+2. Gitignore the generated plaintext paths (for example `apps/*/.env`). If an output path is still tracked, v3 deliberately overwrites it with the decrypted bytes and leaves the checkout dirty; remove migrated secret outputs from the index rather than relying on the ignore rule alone.
+3. Remove any deploy script that restores or resets the old tracked plaintext path (for example `git restore -- 'apps/*/.env'`). After the rename there is nothing tracked at that path, and under `set -e` such a command can abort before pull/decrypt.
+4. Deploy the v3 image **before** the renamed tree reaches the servers (an old v2 binary finds no `.env` ciphertext after the rename and decrypts nothing; a v3 binary on a pre-rename tree fails loudly on the stray ciphertext under `--ext`).
+5. Keep the trigger command unchanged: `--ext .env` selects `.env.enc` sources in v3.
+
+The stray-ciphertext guard is the migration net: after step 3, any secret you forgot to rename fails the deploy with a `stray age ciphertext` error naming the file, instead of letting an app read ciphertext.
 
 ## Healthcheck
 
@@ -158,7 +175,15 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
 ## File-permission requirements
 
 - The age identity file (`keys.txt`) must be readable by the container user. The image runs as the distroless non-root user by default; keep the identity mode 0600 on the host and readable by that user.
-- The container needs write access to the `.env` files it rewrites and the directories holding them (decryption is an atomic temp-then-rename). Run it as a user that owns the tree, or fix ownership on the mounts. If the tree has mixed or root ownership (for example an orchestrator that clones it as root), override with `user: "0:0"`.
+- The container needs read access to the `.enc` sources and write access to the directories holding them (the plaintext sibling is created via an atomic temp-then-rename in the same directory). Generated plaintext is written mode 0600, owned by the container user. Run it as a user that owns the tree, or fix ownership on the mounts. If the tree has mixed or root ownership (for example an orchestrator that clones it as root), override with `user: "0:0"`.
+
+## Filesystem stability and temp namespace
+
+A decrypt pass supports other `age-decrypt` processes operating concurrently on the same **stable checkout**. It does not turn a repository that an untrusted process can actively rename, hardlink, or replace during the pass into a transactional snapshot; do not grant untrusted writers access to the mounted tree while decryption runs. Sources must be regular, single-link inodes, and random exclusive temp creation plus inode, mode, and link-count checks make static source hardlinks, pre-seeded temp paths, and ordinary races fail closed. As with any path-scoped API, these checks cannot prove the historical provenance of copied or renamed file contents.
+
+The final path pattern `<output>.<32-lowercase-hex-chars>.age-decrypt-tmp` is reserved for v3 plaintext temps. The orphan sweep also recognizes the exact legacy `<output>.<pid>.<counter>.age-decrypt-tmp` form so upgrades can reclaim interrupted writes. It only touches stale regular files that are mode 0600 with one link; do not create application files in this namespace.
+
+The 10 MB ciphertext and 1 MB plaintext limits are **per file**. A pass intentionally has no aggregate file-count, total-byte, or wall-clock budget, so operators should bound repository size and invocation frequency at the deployment layer.
 
 ## Security
 
@@ -174,7 +199,7 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
 
 The image is published with [cosign](https://github.com/sigstore/cosign) signatures and SBOM attestations.
 
-The Go binary is built with `-trimpath` (strip absolute paths) and `-ldflags="-s -w"` (strip symbol tables and DWARF). All file I/O goes through `os.OpenRoot` to prevent symlink traversal out of the mounted tree.
+The Go binary is built with `-trimpath` (strip absolute paths) and `-ldflags="-s -w"` (strip symbol tables and DWARF). Tree I/O goes through `os.OpenRoot` for pathname confinement; source descriptors additionally require matching rooted snapshots, regular-file type, and link count one so a symlink or same-filesystem hardlink cannot import an out-of-scope ciphertext inode.
 
 ## Dependencies
 

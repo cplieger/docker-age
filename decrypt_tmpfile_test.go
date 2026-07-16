@@ -1,37 +1,30 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 )
 
 // Tests for the atomic-write temp-file lifecycle in decrypt.go:
-// writeDecryptedInPlace (write-temp-then-rename), wipeTempFile (best-effort
-// unlink with a truncate-to-zero fallback so plaintext never lingers), and
-// sweepOrphanTmpFile (age-bound reclaim of temps left by a crashed run). These
-// pin the security-critical "no plaintext debris" guarantees.
+// exclusive random temp creation, descriptor-owned cleanup, and the
+// age-bound orphan sweep. These pin the security-critical "never truncate a
+// pre-existing inode and leave no plaintext debris" guarantees.
 
-// TestWriteDecryptedInPlace_rename_failure_leaves_no_plaintext_debris pins the
-// cleanup contract of the cycle-1-extracted writeDecryptedInPlace: when the
-// rename step fails (the exact production failure mode that motivated PID-keyed
-// tmp naming -- "renameat <dir>/.env.tmp <dir>/.env: no such file or
-// directory"), the function must return fileFailed AND remove the 0600
-// plaintext temp so no decrypted secret lingers on disk. The rename-failure
-// branch (decrypt.go ~165-181) is otherwise unexercised -- existing tests cover
-// only the happy path and the WriteFile-failure (read-only dir) path. A
-// deterministic rename failure is forced by making rel an existing directory:
-// renaming a file onto a directory fails (EISDIR).
-func TestWriteDecryptedInPlace_rename_failure_leaves_no_plaintext_debris(t *testing.T) {
+// TestWriteDecryptedSibling_rename_failure_leaves_no_plaintext_debris pins the
+// cleanup contract: when the rename step fails, the function must return
+// fileFailed AND remove or zero the 0600 plaintext temp so no decrypted secret
+// lingers on disk. A deterministic rename failure is forced by making the
+// directory: renaming a file onto a directory fails (EISDIR).
+func TestWriteDecryptedSibling_rename_failure_leaves_no_plaintext_debris(t *testing.T) {
 	tmpDir := t.TempDir()
-	rel := "target"
-	if err := os.Mkdir(filepath.Join(tmpDir, rel), 0o755); err != nil {
+	out := "target"
+	if err := os.Mkdir(filepath.Join(tmpDir, out), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 
@@ -41,12 +34,12 @@ func TestWriteDecryptedInPlace_rename_failure_leaves_no_plaintext_debris(t *test
 	}
 	defer func() { _ = rootDir.Close() }()
 
-	got := writeDecryptedInPlace(rootDir, rel, []byte("SECRET=plaintext\n"))
+	got := writeDecryptedSibling(context.Background(), rootDir, out+encSuffix, out, []byte("SECRET=plaintext\n"))
 	if got != fileFailed {
-		t.Errorf("writeDecryptedInPlace(rename onto dir) = %d, want %d (fileFailed)", got, fileFailed)
+		t.Errorf("writeDecryptedSibling(rename onto dir) = %d, want %d (fileFailed)", got, fileFailed)
 	}
 
-	// Security invariant: a failed in-place rewrite must leave no 0600 plaintext
+	// Security invariant: a failed sibling write must leave no 0600 plaintext
 	// temp debris behind (any name carrying the tmpSuffix marker).
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
@@ -59,98 +52,160 @@ func TestWriteDecryptedInPlace_rename_failure_leaves_no_plaintext_debris(t *test
 	}
 }
 
-// TestWipeTempFile_truncates_when_remove_blocked pins the security-critical
-// defense-in-depth in wipeTempFile (decrypt.go:137-140): when the unlink of the
-// 0600 plaintext temp fails for a reason OTHER than fs.ErrNotExist, the function
-// must truncate the temp to zero so decrypted plaintext cannot linger on disk
-// until the age-bound orphan sweep reclaims it. This fallback was previously
-// uncovered (wipeTempFile 33.3%). Cycle 2 dismissed it as "equivalent-mutant
-// territory -- no deterministic os.Root injection point", but that is incorrect:
-// rootDir.Remove fails deterministically with EACCES under a 0o555 parent dir
-// (the SAME injection point TestSweepOrphanTmpFile_returns_false_when_remove_fails
-// already relies on), while truncating an existing 0o600 file needs only
-// file-write permission, so the WriteFile-truncate still succeeds.
-func TestWipeTempFile_truncates_when_remove_blocked(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping on Windows: chmod on directories unreliable")
-	}
-	if os.Geteuid() == 0 {
-		t.Skip("skipping as root: chmod bypass makes directory writable")
-	}
-
+// TestWriteDecryptedSibling_canceled_before_rename_skips_and_leaves_no_output
+// pins the pre-rename cancellation guard: when the context is already canceled
+// by the time the temp is ready to publish, the function must return
+// fileSkipped, publish no sibling, and leave no plaintext temp debris — so a
+// deploy interrupted mid-pass never leaves a decrypted secret behind its
+// non-zero exit. Complements the stdin-path cancellation regression in
+// decrypt_stdin_test.go.
+func TestWriteDecryptedSibling_canceled_before_rename_skips_and_leaves_no_output(t *testing.T) {
 	tmpDir := t.TempDir()
-	rel := "leftover.env.4242.1" + tmpSuffix
-	p := filepath.Join(tmpDir, rel)
-	if err := os.WriteFile(p, []byte("SECRET=plaintext\n"), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	// Make the parent unwritable so the unlink fails with EACCES (not
-	// ErrNotExist), forcing the truncate-to-zero fallback. Truncating the
-	// existing 0o600 file needs file (not dir) write permission, so it succeeds.
-	if err := os.Chmod(tmpDir, 0o555); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(tmpDir, 0o755) })
-
 	rootDir, err := os.OpenRoot(tmpDir)
 	if err != nil {
 		t.Fatalf("OpenRoot: %v", err)
 	}
 	defer func() { _ = rootDir.Close() }()
 
-	wipeTempFile(rootDir, rel)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // canceled before the publish decision
 
-	// Security invariant: plaintext must not linger. The unlink was blocked, so
-	// the file remains -- but it must have been truncated to zero bytes.
-	info, statErr := os.Stat(p)
-	if statErr != nil {
-		if errors.Is(statErr, fs.ErrNotExist) {
-			return // removed entirely also satisfies "no plaintext lingers"
-		}
-		t.Fatalf("stat: %v", statErr)
+	got := writeDecryptedSibling(ctx, rootDir, "app.env"+encSuffix, "app.env", []byte("SECRET=plaintext\n"))
+	if got != fileSkipped {
+		t.Errorf("writeDecryptedSibling(canceled) = %d, want %d (fileSkipped)", got, fileSkipped)
 	}
-	if info.Size() != 0 {
-		t.Errorf("wipeTempFile left %d bytes of plaintext on disk, want 0 (truncate-to-zero fallback)", info.Size())
+	if _, statErr := os.Stat(filepath.Join(tmpDir, "app.env")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("canceled publish left output app.env (err=%v), want it absent", statErr)
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if isOrphanTmpFile(e.Name()) {
+			t.Errorf("canceled publish left plaintext temp debris: %q", e.Name())
+		}
 	}
 }
 
-// TestWipeTempFile_logs_when_truncate_also_fails covers wipeTempFile's inner arm:
-// when Remove fails (not ErrNotExist) AND the truncate fallback also fails,
-// the function logs a "temp cleanup error" warning.
-func TestWipeTempFile_logs_when_truncate_also_fails(t *testing.T) {
+// TestWriteDecryptedSibling_success_writes_0600_output pins the output file
+// mode: the plaintext sibling is created via a 0600 temp renamed into place,
+// so it must never be group/world-readable regardless of the source's mode.
+func TestWriteDecryptedSibling_success_writes_0600_output(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("skipping on Windows: chmod on directories unreliable")
-	}
-	if os.Geteuid() == 0 {
-		t.Skip("skipping as root: chmod bypass makes the file writable")
+		t.Skip("skipping on Windows: unix permission bits unreliable")
 	}
 	tmpDir := t.TempDir()
-	rel := "leftover.env.4242.1" + tmpSuffix
-	p := filepath.Join(tmpDir, rel)
-	if err := os.WriteFile(p, []byte("SECRET=plaintext\n"), 0o400); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	// 0o555 parent: unlink fails EACCES. 0o400 temp: truncate fails EACCES too.
-	if err := os.Chmod(tmpDir, 0o555); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(tmpDir, 0o755) })
-
-	var buf strings.Builder
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-
 	rootDir, err := os.OpenRoot(tmpDir)
 	if err != nil {
 		t.Fatalf("OpenRoot: %v", err)
 	}
 	defer func() { _ = rootDir.Close() }()
 
-	wipeTempFile(rootDir, rel)
+	got := writeDecryptedSibling(context.Background(), rootDir, "app.env"+encSuffix, "app.env", []byte("SECRET=plaintext\n"))
+	if got != fileDecrypted {
+		t.Fatalf("writeDecryptedSibling = %d, want %d (fileDecrypted)", got, fileDecrypted)
+	}
+	info, err := os.Stat(filepath.Join(tmpDir, "app.env"))
+	if err != nil {
+		t.Fatalf("stat output: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("output mode = %o, want 600", perm)
+	}
+}
 
-	if out := buf.String(); !strings.Contains(out, "temp cleanup error") {
-		t.Errorf("wipeTempFile(remove+truncate both fail) log = %q, want a 'temp cleanup error' warning", out)
+// TestOpenExclusiveTemp_refuses_preexisting_inodes exercises the primitive
+// behind every plaintext temp creation. A regular file, symlink, or hardlink
+// already at the proposed name must be left byte-for-byte untouched; in
+// particular, a hardlink to the ciphertext source may never be truncated.
+func TestOpenExclusiveTemp_refuses_preexisting_inodes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows: symlink and hardlink behavior differs")
+	}
+
+	tests := map[string]func(t *testing.T, dir, name string) string{
+		"regular file": func(t *testing.T, dir, name string) string {
+			t.Helper()
+			path := filepath.Join(dir, name)
+			if err := os.WriteFile(path, []byte("DO_NOT_TRUNCATE"), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			return path
+		},
+		"symlink": func(t *testing.T, dir, name string) string {
+			t.Helper()
+			victim := filepath.Join(dir, "victim")
+			if err := os.WriteFile(victim, []byte("DO_NOT_TRUNCATE"), 0o600); err != nil {
+				t.Fatalf("write victim: %v", err)
+			}
+			if err := os.Symlink("victim", filepath.Join(dir, name)); err != nil {
+				t.Fatalf("symlink: %v", err)
+			}
+			return victim
+		},
+		"hardlink to source": func(t *testing.T, dir, name string) string {
+			t.Helper()
+			source := filepath.Join(dir, "app.env"+encSuffix)
+			if err := os.WriteFile(source, []byte("DO_NOT_TRUNCATE"), 0o600); err != nil {
+				t.Fatalf("write source: %v", err)
+			}
+			if err := os.Link(source, filepath.Join(dir, name)); err != nil {
+				t.Fatalf("hardlink: %v", err)
+			}
+			return source
+		},
+	}
+
+	for name, setup := range tests {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			tempName := "app.env.0123456789abcdef0123456789abcdef" + tmpSuffix
+			victim := setup(t, dir, tempName)
+			before, err := os.ReadFile(victim)
+			if err != nil {
+				t.Fatalf("read before: %v", err)
+			}
+
+			rootDir, err := os.OpenRoot(dir)
+			if err != nil {
+				t.Fatalf("OpenRoot: %v", err)
+			}
+			defer func() { _ = rootDir.Close() }()
+
+			f, err := openExclusiveTemp(rootDir, tempName)
+			if err == nil {
+				_ = f.Close()
+				t.Fatal("openExclusiveTemp(pre-existing path) = nil error, want refusal")
+			}
+			after, readErr := os.ReadFile(victim)
+			if readErr != nil {
+				t.Fatalf("read after: %v", readErr)
+			}
+			if string(after) != string(before) {
+				t.Errorf("victim changed: got %q, want %q", after, before)
+			}
+		})
+	}
+}
+
+// A generic suffix match is too broad for a cleanup routine. Only the random
+// v3 grammar and strict legacy PID/counter grammar are reserved and sweepable.
+func TestIsOrphanTmpFile_strict_namespace(t *testing.T) {
+	tests := map[string]bool{
+		"app.env.0123456789abcdef0123456789abcdef" + tmpSuffix: true,
+		"app.env.4242.1" + tmpSuffix:                           true,
+		".env.1.9" + tmpSuffix:                                 true,
+		"notes" + tmpSuffix:                                    false,
+		"app.env.not-hex" + tmpSuffix:                          false,
+		"app.env.A123456789abcdef0123456789abcdef" + tmpSuffix: false,
+		"app.env.0.1" + tmpSuffix:                              false,
+		"app.env.1.0" + tmpSuffix:                              false,
+	}
+	for name, want := range tests {
+		if got := isOrphanTmpFile(name); got != want {
+			t.Errorf("isOrphanTmpFile(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
 

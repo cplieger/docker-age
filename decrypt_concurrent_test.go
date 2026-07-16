@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,32 +15,35 @@ import (
 	"filippo.io/age"
 )
 
-// TestDecryptAll_concurrent_safe reproduces a production race: when an
-// orchestrator fans out pre_deploy across N stacks in parallel, N processes
-// invoke "docker exec age /age-decrypt decrypt" simultaneously. With a
-// shared tmp name, one process's sweep deleted another's in-flight tmp,
-// surfacing as:
+// TestDecryptAll_concurrent_safe reproduces the production race the tmp-name
+// scheme guards: when an orchestrator fans out pre_deploy across N stacks in
+// parallel, N processes invoke "docker exec age /age-decrypt decrypt"
+// simultaneously. With a shared tmp name, one process's sweep deleted
+// another's in-flight tmp, surfacing (under the v2 in-place model) as:
 //
 //	renameat <dir>/.env.tmp <dir>/.env: no such file or directory
 //
-// This test simulates the fan-out in-process (each goroutine plays the role
-// of a separate age-decrypt invocation) and asserts: all runs succeed, every
-// .env file ends up with its correct plaintext, and no decrypt-temp debris
-// is left on disk.
+// Under v3 every pass re-decrypts each source to its sibling, so concurrent
+// passes all write the same outputs — atomically, last writer wins with
+// identical content. This test simulates the fan-out in-process (each
+// goroutine plays the role of a separate age-decrypt invocation) and asserts:
+// all runs succeed with zero failures, every output holds its plaintext,
+// every source survives as ciphertext, and no temp debris is left on disk.
 func TestDecryptAll_concurrent_safe(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
 	const numFiles = 15
 	type envFile struct {
-		path    string
+		src     string
+		out     string
 		content []byte
 	}
 	files := make([]envFile, numFiles)
 	for i := range numFiles {
 		content := fmt.Appendf(nil, "KEY_%d=value_%d\n", i, i)
-		p := writeEncryptedEnv(t, tmpDir, fmt.Sprintf("app%d.env", i), content, identity.Recipient())
-		files[i] = envFile{path: p, content: content}
+		src, out := writeEncSource(t, tmpDir, fmt.Sprintf("app%d.env", i), content, identity.Recipient())
+		files[i] = envFile{src: src, out: out, content: content}
 	}
 
 	const concurrency = 8
@@ -53,7 +55,7 @@ func TestDecryptAll_concurrent_safe(t *testing.T) {
 			defer wg.Done()
 			// Each goroutine does its own full pass over the tree — same as
 			// each stack's pre_deploy in the real topology.
-			res, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, nil)
+			res, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, []string{".env"})
 			if err != nil {
 				errCh <- fmt.Errorf("decryptAll returned error: %w", err)
 				return
@@ -70,18 +72,23 @@ func TestDecryptAll_concurrent_safe(t *testing.T) {
 		t.Error(err)
 	}
 
-	// Every file should now be decrypted to its original plaintext. The
-	// first goroutine to race through a given file wins; idempotent re-reads
-	// from the other goroutines are skipped (plaintext no longer has the
-	// age header), which is the correct behaviour.
+	// Every output holds its plaintext; every source is still ciphertext.
 	for _, f := range files {
-		got, err := os.ReadFile(f.path)
+		got, err := os.ReadFile(f.out)
 		if err != nil {
-			t.Errorf("read %s: %v", f.path, err)
+			t.Errorf("read %s: %v", f.out, err)
 			continue
 		}
 		if !bytes.Equal(got, f.content) {
-			t.Errorf("file %s: got %q, want %q", filepath.Base(f.path), got, f.content)
+			t.Errorf("output %s: got %q, want %q", filepath.Base(f.out), got, f.content)
+		}
+		srcData, err := os.ReadFile(f.src)
+		if err != nil {
+			t.Errorf("read source %s: %v", f.src, err)
+			continue
+		}
+		if !bytes.HasPrefix(srcData, []byte(armoredHeader)) {
+			t.Errorf("source %s lost its ciphertext", filepath.Base(f.src))
 		}
 	}
 
@@ -98,9 +105,9 @@ func TestDecryptAll_concurrent_safe(t *testing.T) {
 }
 
 // TestDecryptAll_sweep_preserves_young_peer_tmps guards the age-bound sweep:
-// a fresh per-PID tmp sitting on disk (another process's in-flight write)
-// must not be removed. Removing it is exactly the bug that caused the
-// original failure.
+// a fresh temp in the recognized legacy namespace (simulating another
+// process's in-flight write) must not be removed. Removing it is exactly the
+// bug that caused the original failure.
 func TestDecryptAll_sweep_preserves_young_peer_tmps(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -120,8 +127,8 @@ func TestDecryptAll_sweep_preserves_young_peer_tmps(t *testing.T) {
 	}
 }
 
-// TestDecryptAll_sweep_removes_stale_per_pid_tmps asserts that a sufficiently
-// old per-PID tmp (from a long-dead run) does get cleaned up.
+// TestDecryptAll_sweep_removes_stale_per_pid_tmps asserts upgrade
+// compatibility: a sufficiently old legacy PID/counter temp is cleaned up.
 func TestDecryptAll_sweep_removes_stale_per_pid_tmps(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -145,16 +152,14 @@ func TestDecryptAll_sweep_removes_stale_per_pid_tmps(t *testing.T) {
 	}
 }
 
-// TestDecryptFile_tmp_name_encodes_pid pins the naming invariant the
-// concurrency fix relies on: the tmp file name must be unique per caller
-// (PID + in-process counter) so parallel age-decrypt invocations cannot
-// collide on the same rename target.
-func TestDecryptFile_tmp_name_encodes_pid(t *testing.T) {
+// TestDecryptFile_random_tmp_is_reclaimed pins the observable naming
+// invariant: successful decrypt leaves no strict random-token temp behind.
+func TestDecryptFile_random_tmp_is_reclaimed(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
 	original := []byte("KEY=value\n")
-	writeEncryptedEnv(t, tmpDir, "pinned.env", original, identity.Recipient())
+	src, out := writeEncSource(t, tmpDir, "pinned.env", original, identity.Recipient())
 
 	rootDir, err := os.OpenRoot(tmpDir)
 	if err != nil {
@@ -162,50 +167,56 @@ func TestDecryptFile_tmp_name_encodes_pid(t *testing.T) {
 	}
 	defer func() { _ = rootDir.Close() }()
 
-	if got := decryptFile(context.Background(), rootDir, "pinned.env", []age.Identity{identity}); got != fileDecrypted {
+	if got := decryptFile(context.Background(), rootDir, "pinned.env"+encSuffix, []age.Identity{identity}); got != fileDecrypted {
 		t.Fatalf("decryptFile = %d, want %d (fileDecrypted)", got, fileDecrypted)
 	}
 
-	// After a successful rename, no decrypt temp should linger. The temp is
-	// named <rel>.<pid>.<counter>.age-decrypt-tmp; assert none carrying this
-	// caller's PID and the marker remains.
-	pidMark := fmt.Sprintf("pinned.env.%d.", os.Getpid())
+	// After a successful rename, no decrypt temp from the strict reserved
+	// namespace should linger.
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
 		t.Fatalf("readdir: %v", err)
 	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), pidMark) && strings.HasSuffix(e.Name(), tmpSuffix) {
-			t.Errorf("per-caller tmp %q should have been renamed away", e.Name())
+		if isOrphanTmpFile(e.Name()) {
+			t.Errorf("decrypt temp %q should have been renamed away", e.Name())
 		}
 	}
 
-	// And the final decrypted file must exist with the expected content.
-	got, err := os.ReadFile(filepath.Join(tmpDir, "pinned.env"))
+	// The output holds the plaintext and the source survives as ciphertext.
+	got, err := os.ReadFile(out)
 	if err != nil {
-		t.Fatalf("read pinned.env: %v", err)
+		t.Fatalf("read output: %v", err)
 	}
 	if !bytes.Equal(got, original) {
-		t.Errorf("pinned.env content = %q, want %q", got, original)
+		t.Errorf("output content = %q, want %q", got, original)
+	}
+	srcData, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	if !bytes.HasPrefix(srcData, []byte(armoredHeader)) {
+		t.Error("source lost its ciphertext")
 	}
 }
 
-// TestIsOrphanTmpFile pins the decrypt-temp matcher: it recognizes a file by
-// the age-decrypt-tmp marker alone, regardless of the underlying extension
-// (the v2 coverage fix), and deliberately no longer matches the legacy
-// ".env.tmp" shapes — temps are migrated to the marker, not kept compatible.
+// TestIsOrphanTmpFile pins the reserved namespace: v3 random-token names and
+// strict legacy PID/counter names match; a generic marker suffix does not.
 func TestIsOrphanTmpFile(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
 		want  bool
 	}{
-		{name: "env temp", input: "app.env.12345.7" + tmpSuffix, want: true},
-		{name: "bare dotenv temp", input: ".env.99999.1" + tmpSuffix, want: true},
-		{name: "non-env temp (the v2 coverage gap)", input: "config.yaml.4242.2" + tmpSuffix, want: true},
-		{name: "json temp", input: "secrets.json.1.1" + tmpSuffix, want: true},
-		{name: "marker alone", input: tmpSuffix, want: true},
+		{name: "env legacy temp", input: "app.env.12345.7" + tmpSuffix, want: true},
+		{name: "bare dotenv legacy temp", input: ".env.99999.1" + tmpSuffix, want: true},
+		{name: "non-env legacy temp", input: "config.yaml.4242.2" + tmpSuffix, want: true},
+		{name: "json legacy temp", input: "secrets.json.1.1" + tmpSuffix, want: true},
+		{name: "v3 random temp", input: "app.env.0123456789abcdef0123456789abcdef" + tmpSuffix, want: true},
+		{name: "marker alone", input: tmpSuffix, want: false},
+		{name: "malformed random token", input: "app.env.not-hex" + tmpSuffix, want: false},
 		{name: "plain env file", input: "app.env", want: false},
+		{name: "ciphertext source", input: "app.env" + encSuffix, want: false},
 		{name: "decrypted dotenv", input: ".env", want: false},
 		{name: "non env file", input: "config.txt", want: false},
 		{name: "legacy bare suffix no longer matched", input: ".env.tmp", want: false},

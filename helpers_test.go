@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,8 +64,10 @@ func newIdentity(t *testing.T) *age.X25519Identity {
 	return id
 }
 
-// writeEncryptedEnv writes an armored-encrypted .env file and returns
-// the original plaintext content.
+// writeEncryptedEnv writes armored ciphertext at exactly <dir>/<name> and
+// returns that path. Most v3 tests want a .enc source; use writeEncSource for
+// the source+output pair, or this directly when the test needs ciphertext at
+// a non-.enc path (e.g. the stray-ciphertext guard).
 func writeEncryptedEnv(t *testing.T, dir, name string, content []byte, recipient age.Recipient) string {
 	t.Helper()
 	encrypted, err := encryptArmored(content, recipient)
@@ -75,6 +79,41 @@ func writeEncryptedEnv(t *testing.T, dir, name string, content []byte, recipient
 		t.Fatalf("write: %v", err)
 	}
 	return p
+}
+
+// writeEncSource writes an armored-encrypted ciphertext source at
+// <dir>/<name>.enc and returns (src, out): the source path and the sibling
+// plaintext path a decrypt pass must produce.
+func writeEncSource(t *testing.T, dir, name string, content []byte, recipient age.Recipient) (src, out string) {
+	t.Helper()
+	out = filepath.Join(dir, name)
+	src = writeEncryptedEnv(t, dir, name+encSuffix, content, recipient)
+	return src, out
+}
+
+// assertSourcePreserved fails the test when the ciphertext source at src no
+// longer matches want — the v3 invariant that no decrypt path ever modifies
+// its source.
+func assertSourcePreserved(t *testing.T, src string, want []byte) {
+	t.Helper()
+	got, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read source %s: %v", src, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("ciphertext source %s was modified (got %d bytes, want %d)", src, len(got), len(want))
+	}
+}
+
+// assertNoOutput fails the test when a plaintext sibling exists at out — used
+// after failed or skipped decrypts, which must never create partial output.
+func assertNoOutput(t *testing.T, out string) {
+	t.Helper()
+	if _, err := os.Stat(out); err == nil {
+		t.Errorf("unexpected plaintext output %s (failed/skipped decrypt must not create it)", out)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("stat output %s: %v", out, err)
+	}
 }
 
 // decryptAllCount is a test-local adapter that preserves the pre-refactor

@@ -1,5 +1,7 @@
 // Package main implements age-decrypt, which walks a mounted directory tree
-// and decrypts age-encrypted files (binary or armored age format) in place.
+// and decrypts age-encrypted .enc sources (binary or armored age format) to
+// their plaintext siblings (the source path minus .enc). Ciphertext is never
+// modified; the plaintext plane is generated next to it.
 package main
 
 import (
@@ -17,7 +19,7 @@ type config struct {
 	Mode     string
 
 	// Decrypt-specific options (populated only when Mode == modeDecrypt).
-	Extensions []string // --ext filters (empty = all age-formatted files)
+	Extensions []string // --ext filters on the OUTPUT name (empty = all .enc sources)
 	Targets    []string // positional args; empty = walk RepoRoot; "-" = stdin/stdout pipe
 }
 
@@ -41,7 +43,14 @@ func parseConfig() (config, error) {
 			if err != nil {
 				return config{}, err
 			}
+			if selectionErr := validateDecryptSelection(extensions, targets); selectionErr != nil {
+				return config{}, selectionErr
+			}
 		case modeHealth:
+			// Dispatched in main before parseConfig runs (the probe must work
+			// without AGE_KEY_FILE), so this case is normally unreachable; it
+			// stays so parseConfig names the full CLI surface (pinned by
+			// config_test.go) instead of mislabeling `health` as unknown.
 			mode = modeHealth
 		default:
 			return config{}, fmt.Errorf("unknown subcommand %q (expected: health, decrypt)", os.Args[1])
@@ -62,6 +71,21 @@ func parseConfig() (config, error) {
 		Extensions: extensions,
 		Targets:    targets,
 	}, nil
+}
+
+func validateDecryptSelection(extensions, targets []string) error {
+	for _, target := range targets {
+		if target != "-" {
+			continue
+		}
+		if len(targets) != 1 {
+			return errors.New("stdin target '-' cannot be combined with file or directory targets")
+		}
+		if len(extensions) != 0 {
+			return errors.New("--ext cannot be used with stdin target '-' (the pipe has no output filename to filter)")
+		}
+	}
+	return nil
 }
 
 // parseDecryptArgs parses the arguments to the `decrypt` subcommand
@@ -115,13 +139,33 @@ func appendNormalizedExt(extensions []string, raw string) ([]string, error) {
 // An empty value is rejected so a malformed flag ("--ext=" or `--ext ""`)
 // cannot silently collapse to the "." suffix, which matches almost nothing and
 // turns the decrypt pass into a no-op that still exits 0 -- defeating the deploy
-// gate that keys on the exit code.
+// gate that keys on the exit code. A value ending in .enc is rejected too:
+// --ext filters the decrypted OUTPUT name (sources always carry the .enc
+// suffix on top of it), so `--ext .env` is what selects `.env.enc` sources —
+// `--ext .env.enc` would select `.env.enc.enc` and silently match nothing.
+// Path separators and surrounding whitespace are rejected for the same reason:
+// an extension is a filename suffix, and ambiguous values must not no-op with
+// a successful deploy-gate exit.
 func normalizeExt(raw string) (string, error) {
 	if raw == "" || raw == "." {
 		return "", errors.New("--ext requires a non-empty value (e.g. --ext .env)")
 	}
+	if strings.ContainsAny(raw, `/\\`) {
+		return "", fmt.Errorf("--ext must be a filename suffix, not a path: %q", raw)
+	}
+	if strings.TrimSpace(raw) != raw {
+		return "", fmt.Errorf("--ext must not contain leading or trailing whitespace: %q", raw)
+	}
 	if !strings.HasPrefix(raw, ".") {
 		raw = "." + raw
+	}
+	if trimmed, found := strings.CutSuffix(raw, encSuffix); found {
+		if trimmed != "" {
+			return "", fmt.Errorf("--ext filters the decrypted output name, not the %s source (use --ext %s to select %s%s sources)",
+				encSuffix, trimmed, trimmed, encSuffix)
+		}
+		return "", fmt.Errorf("--ext %s is redundant: every source already carries the %s suffix (omit --ext to decrypt all sources)",
+			encSuffix, encSuffix)
 	}
 	return raw, nil
 }
