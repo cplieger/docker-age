@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 
 	"filippo.io/age"
+	"github.com/cplieger/slogx/capture"
 )
 
 // Tests for main.go's dispatch and reporting layer: the single-file entry
@@ -402,62 +403,74 @@ func TestRunServer_exits_zero_on_signal(t *testing.T) {
 // --- logDecryptResult / warnIfNoFilesSeen ---
 
 func TestLogDecryptResult_emits_all_counts(t *testing.T) {
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	// Not parallel: capture.Default swaps the global slog default.
+	rec := capture.Default(t)
 
 	logDecryptResult("decryption complete", decryptResult{
 		Decrypted: 3, Failed: 2, Skipped: 5, WalkErrors: 1,
 	})
 
-	out := buf.String()
-	for _, want := range []string{
-		`msg="decryption complete"`,
-		"decrypted=3",
-		"failed=2",
-		"skipped=5",
-		"walk_errors=1",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("logDecryptResult output missing %q, got %q", want, out)
-		}
+	if got := rec.CountExact("decryption complete"); got != 1 {
+		t.Fatalf("CountExact(decryption complete) = %d, want 1 (messages=%v)", got, rec.Messages())
+	}
+	r := rec.Records()[0]
+	if r.Level != slog.LevelInfo {
+		t.Errorf("level = %v, want INFO", r.Level)
+	}
+	want := map[string]int64{"decrypted": 3, "failed": 2, "skipped": 5, "walk_errors": 1}
+	got := map[string]int64{}
+	r.Attrs(func(a slog.Attr) bool {
+		got[a.Key] = a.Value.Int64()
+		return true
+	})
+	if !maps.Equal(got, want) {
+		t.Errorf("attrs = %v, want %v", got, want)
 	}
 }
 
 func TestWarnIfNoFilesSeen_warns_only_when_no_files_seen(t *testing.T) {
 	tests := []struct {
-		name       string
-		result     decryptResult
-		targets    []string
-		wantSubstr string // distinguishes the repo-root vs named-target warning
-		wantWarn   bool
+		name     string
+		result   decryptResult
+		targets  []string
+		wantAttr string // the attr key distinguishing the repo-root vs named-target warning
+		wantWarn bool
 	}{
-		{name: "all zero, no targets, warns about repo root", result: decryptResult{}, targets: nil, wantWarn: true, wantSubstr: "repo_root"},
-		{name: "all zero, with targets, warns about the named targets", result: decryptResult{}, targets: []string{"/foo/bar"}, wantWarn: true, wantSubstr: "targets"},
+		{name: "all zero, no targets, warns about repo root", result: decryptResult{}, targets: nil, wantWarn: true, wantAttr: "repo_root"},
+		{name: "all zero, with targets, warns about the named targets", result: decryptResult{}, targets: []string{"/foo/bar"}, wantWarn: true, wantAttr: "targets"},
 		{name: "decrypted nonzero is silent", result: decryptResult{Decrypted: 1}, wantWarn: false},
 		{name: "failed nonzero is silent", result: decryptResult{Failed: 1}, wantWarn: false},
 		{name: "skipped nonzero is silent", result: decryptResult{Skipped: 1}, wantWarn: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var buf bytes.Buffer
-			prev := slog.Default()
-			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-			t.Cleanup(func() { slog.SetDefault(prev) })
+			// Not parallel: capture.Default swaps the global slog default.
+			rec := capture.Default(t)
 			warnIfNoFilesSeen(tt.result, "/repo/app", tt.targets)
-			out := buf.String()
-			gotWarn := strings.Contains(out, "no matching files found")
+			gotWarn := rec.Contains("no matching files found")
 			if gotWarn != tt.wantWarn {
-				t.Errorf("warnIfNoFilesSeen(%+v, targets=%v) warn=%v, want %v (output=%q)", tt.result, tt.targets, gotWarn, tt.wantWarn, out)
+				t.Errorf("warnIfNoFilesSeen(%+v, targets=%v) warn=%v, want %v (messages=%v)", tt.result, tt.targets, gotWarn, tt.wantWarn, rec.Messages())
 			}
-			if tt.wantWarn {
-				if !strings.Contains(out, "level=WARN") {
-					t.Errorf("warnIfNoFilesSeen warn missing level=WARN, got %q", out)
+			if !tt.wantWarn {
+				return
+			}
+			records := rec.Records()
+			if len(records) != 1 {
+				t.Fatalf("captured %d records, want exactly one warning", len(records))
+			}
+			r := records[0]
+			if r.Level != slog.LevelWarn {
+				t.Errorf("level = %v, want WARN", r.Level)
+			}
+			hasAttr := false
+			r.Attrs(func(a slog.Attr) bool {
+				if a.Key == tt.wantAttr {
+					hasAttr = true
 				}
-				if !strings.Contains(out, tt.wantSubstr) {
-					t.Errorf("warnIfNoFilesSeen warn missing %q attr, got %q", tt.wantSubstr, out)
-				}
+				return true
+			})
+			if !hasAttr {
+				t.Errorf("warn record missing the %q attr", tt.wantAttr)
 			}
 		})
 	}
