@@ -2,8 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
+	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 )
@@ -67,7 +72,7 @@ func TestDecryptStream(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
-			code := decryptStream(bytes.NewReader(tc.input), &out, []age.Identity{id})
+			code := decryptStream(context.Background(), bytes.NewReader(tc.input), &out, []age.Identity{id})
 			if code != tc.wantCode {
 				t.Errorf("decryptStream code = %d, want %d", code, tc.wantCode)
 			}
@@ -101,7 +106,7 @@ func FuzzDecryptStream(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		var out bytes.Buffer
-		code := decryptStream(bytes.NewReader(data), &out, []age.Identity{id})
+		code := decryptStream(context.Background(), bytes.NewReader(data), &out, []age.Identity{id})
 		if code != 0 && code != 1 {
 			t.Fatalf("decryptStream code = %d, want 0 or 1", code)
 		}
@@ -139,7 +144,7 @@ func TestDecryptStream_read_error(t *testing.T) {
 	id := newIdentity(t)
 
 	var out bytes.Buffer
-	code := decryptStream(errReader{}, &out, []age.Identity{id})
+	code := decryptStream(context.Background(), errReader{}, &out, []age.Identity{id})
 
 	if code != 1 {
 		t.Errorf("decryptStream(failing reader) = %d, want 1", code)
@@ -161,7 +166,7 @@ func TestDecryptStream_write_error(t *testing.T) {
 		t.Fatalf("encrypt: %v", err)
 	}
 
-	code := decryptStream(bytes.NewReader(ciphertext), errWriter{}, []age.Identity{id})
+	code := decryptStream(context.Background(), bytes.NewReader(ciphertext), errWriter{}, []age.Identity{id})
 
 	if code != 1 {
 		t.Errorf("decryptStream(valid ciphertext, failing writer) = %d, want 1", code)
@@ -184,12 +189,161 @@ func TestDecryptStream_rejects_corrupted_body(t *testing.T) {
 	corrupt := full[:len(full)-1]
 
 	var out bytes.Buffer
-	code := decryptStream(bytes.NewReader(corrupt), &out, []age.Identity{id})
+	code := decryptStream(context.Background(), bytes.NewReader(corrupt), &out, []age.Identity{id})
 
 	if code != 1 {
 		t.Errorf("decryptStream(corrupt body) = %d, want 1", code)
 	}
 	if out.Len() != 0 {
 		t.Errorf("decryptStream(corrupt body) wrote %d bytes, want 0 (no unauthenticated plaintext)", out.Len())
+	}
+}
+
+type cancelAtEOFReader struct {
+	reader *bytes.Reader
+	cancel context.CancelFunc
+}
+
+func (r *cancelAtEOFReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if err != nil {
+		r.cancel()
+	}
+	return n, err
+}
+
+type signalingReadCloser struct {
+	*os.File
+	started chan struct{}
+	once    sync.Once
+}
+
+func (r *signalingReadCloser) Read(p []byte) (int, error) {
+	r.once.Do(func() { close(r.started) })
+	return r.File.Read(p)
+}
+
+func TestDecryptStream_cancellation_writes_nothing(t *testing.T) {
+	id := newIdentity(t)
+	ciphertext, err := encryptArmored([]byte("KEY=value\n"), id.Recipient())
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+
+	t.Run("already canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		var out bytes.Buffer
+		if code := decryptStream(ctx, bytes.NewReader(ciphertext), &out, []age.Identity{id}); code != 1 {
+			t.Errorf("decryptStream(canceled) = %d, want 1", code)
+		}
+		if out.Len() != 0 {
+			t.Errorf("canceled decrypt wrote %d bytes, want 0", out.Len())
+		}
+	})
+
+	t.Run("canceled after input read", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		reader := &cancelAtEOFReader{reader: bytes.NewReader(ciphertext), cancel: cancel}
+		var out bytes.Buffer
+		if code := decryptStream(ctx, reader, &out, []age.Identity{id}); code != 1 {
+			t.Errorf("decryptStream(canceled after read) = %d, want 1", code)
+		}
+		if out.Len() != 0 {
+			t.Errorf("canceled decrypt wrote %d bytes, want 0", out.Len())
+		}
+	})
+}
+
+func TestDecryptProcessStreams_cancellation_interrupts_blocked_input(t *testing.T) {
+	id := newIdentity(t)
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = writeFile.Close() })
+	in := &signalingReadCloser{File: readFile, started: make(chan struct{})}
+	out, err := os.CreateTemp(t.TempDir(), "stdout-*")
+	if err != nil {
+		t.Fatalf("create output: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan int, 1)
+	go func() {
+		result <- decryptProcessStreams(ctx, in, out, []age.Identity{id})
+	}()
+	<-in.started
+	cancel()
+
+	select {
+	case code := <-result:
+		if code != 1 {
+			t.Errorf("decryptProcessStreams(canceled) = %d, want 1", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("decryptProcessStreams did not interrupt its blocked stdin read")
+	}
+}
+
+// unblockableReadCloser models a real inherited BLOCKING descriptor (a
+// shell-redirected FIFO, a `docker exec -i` pipe): its Read blocks until the
+// test releases it, and — crucially — its Close does NOT unblock an in-flight
+// Read. That is exactly how os.File.Close behaves on a descriptor the Go
+// runtime never registered with its poller: it cannot interrupt the syscall.
+// The os.Pipe-based signalingReadCloser pins the pollable path where Close DOES
+// unblock; this pins the path where only ctx.Done can rescue the process.
+type unblockableReadCloser struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *unblockableReadCloser) Read([]byte) (int, error) {
+	r.once.Do(func() { close(r.started) })
+	<-r.release
+	return 0, io.EOF
+}
+
+func (r *unblockableReadCloser) Close() error { return nil }
+
+// blackholeWriteCloser discards writes; the paired read never completes in the
+// cancellation test below, so nothing is ever written to it.
+type blackholeWriteCloser struct{}
+
+func (blackholeWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (blackholeWriteCloser) Close() error                { return nil }
+
+// TestDecryptProcessStreams_cancellation_returns_when_close_cannot_unblock is
+// the regression guard for the inherited-blocking-descriptor liveness bug. On a
+// descriptor whose Close does NOT interrupt an in-flight Read — the descriptors
+// `decrypt -` actually runs against — cancellation must still return promptly.
+// Before the goroutine+select fix, the synchronous decryptStream call blocked
+// here forever and the process survived SIGINT/SIGTERM until the writer closed
+// (signal.NotifyContext had already consumed the signal). The os.Pipe-based
+// test above cannot catch this: os.Pipe fds are poller-registered, the one
+// class where Close does unblock a read.
+func TestDecryptProcessStreams_cancellation_returns_when_close_cannot_unblock(t *testing.T) {
+	id := newIdentity(t)
+	in := &unblockableReadCloser{started: make(chan struct{}), release: make(chan struct{})}
+	// Release the blocked Read after the test so the decrypt goroutine — which
+	// in production is reaped by os.Exit — does not leak past this test.
+	t.Cleanup(func() { close(in.release) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan int, 1)
+	go func() {
+		result <- decryptProcessStreams(ctx, in, blackholeWriteCloser{}, []age.Identity{id})
+	}()
+	<-in.started
+	cancel()
+
+	select {
+	case code := <-result:
+		if code != 1 {
+			t.Errorf("decryptProcessStreams(canceled, unblockable read) = %d, want 1", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("decryptProcessStreams did not return after cancellation when Close cannot unblock the read")
 	}
 }

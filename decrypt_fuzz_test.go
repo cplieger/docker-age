@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,8 +12,10 @@ import (
 	"filippo.io/age"
 )
 
-// FuzzDecryptFile feeds arbitrary file content to decryptFile and asserts no panic.
-// This exercises format detection and decryption error paths with untrusted input.
+// FuzzDecryptFile feeds arbitrary .enc source content to decryptFile and pins
+// the v3 sibling-output invariants: the source is NEVER modified for any
+// input, non-age input never reports success and never creates an output, a
+// successful decrypt creates exactly the sibling, and no temp debris survives.
 func FuzzDecryptFile(f *testing.F) {
 	id, _ := age.GenerateX25519Identity()
 	validArmored, _ := encryptArmored([]byte("KEY=val\n"), id.Recipient())
@@ -27,8 +31,10 @@ func FuzzDecryptFile(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		tmpDir := t.TempDir()
-		envPath := filepath.Join(tmpDir, "fuzz.env")
-		if err := os.WriteFile(envPath, data, 0o644); err != nil {
+		srcRel := "fuzz.env" + encSuffix
+		srcPath := filepath.Join(tmpDir, srcRel)
+		outPath := filepath.Join(tmpDir, "fuzz.env")
+		if err := os.WriteFile(srcPath, data, 0o644); err != nil {
 			t.Fatalf("write: %v", err)
 		}
 
@@ -41,7 +47,7 @@ func FuzzDecryptFile(f *testing.F) {
 		isAge := bytes.HasPrefix(data, []byte(armoredHeader)) ||
 			bytes.HasPrefix(data, []byte(ageHeader))
 
-		status := decryptFile(context.Background(), rootDir, "fuzz.env", []age.Identity{id})
+		status := decryptFile(context.Background(), rootDir, srcRel, []age.Identity{id})
 
 		// Invariant 1: result is always one of the three defined statuses.
 		switch status {
@@ -50,25 +56,45 @@ func FuzzDecryptFile(f *testing.F) {
 			t.Fatalf("decryptFile returned undefined status %d for input %q", status, data)
 		}
 
-		// Invariant 2: input without a recognized age header is never reported
-		// as decrypted and is left byte-for-byte unchanged on disk.
+		// Invariant 2 (the core v3 guarantee): the ciphertext source is never
+		// modified, whatever the input or outcome.
+		srcAfter, readErr := os.ReadFile(srcPath)
+		if readErr != nil {
+			t.Fatalf("read source back: %v", readErr)
+		}
+		if !bytes.Equal(srcAfter, data) {
+			t.Errorf("source was modified on disk: got %q, want %q", srcAfter, data)
+		}
+
+		// Invariant 3: input without a recognized age header is never reported
+		// as decrypted and never produces an output sibling.
 		if !isAge {
 			if status == fileDecrypted {
 				t.Errorf("non-age input reported fileDecrypted (input %q)", data)
 			}
-			after, readErr := os.ReadFile(envPath)
-			if readErr != nil {
-				t.Fatalf("read back: %v", readErr)
-			}
-			if !bytes.Equal(after, data) {
-				t.Errorf("non-age input was modified on disk: got %q, want %q", after, data)
+			if _, statErr := os.Stat(outPath); !errors.Is(statErr, fs.ErrNotExist) {
+				t.Errorf("non-age input produced an output sibling (input %q)", data)
 			}
 		}
 
-		// Invariant 3: regardless of outcome, no temp debris is ever left behind.
-		entries, readErr := os.ReadDir(tmpDir)
-		if readErr != nil {
-			t.Fatalf("readdir: %v", readErr)
+		// Invariant 4: a reported success means the sibling exists; a failure
+		// means it does not (this harness never pre-seeds the output).
+		_, statErr := os.Stat(outPath)
+		switch status {
+		case fileDecrypted:
+			if statErr != nil {
+				t.Errorf("fileDecrypted but output missing: %v", statErr)
+			}
+		case fileFailed, fileSkipped:
+			if !errors.Is(statErr, fs.ErrNotExist) {
+				t.Errorf("status %d but output exists (statErr=%v)", status, statErr)
+			}
+		}
+
+		// Invariant 5: regardless of outcome, no temp debris is ever left behind.
+		entries, readDirErr := os.ReadDir(tmpDir)
+		if readDirErr != nil {
+			t.Fatalf("readdir: %v", readDirErr)
 		}
 		for _, e := range entries {
 			if isOrphanTmpFile(e.Name()) {

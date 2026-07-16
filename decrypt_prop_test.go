@@ -13,25 +13,31 @@ import (
 )
 
 // Property-based tests (pgregory.net/rapid) for the decrypt paths: encrypt →
-// decrypt round-trips (armored and binary), resilient walk over mixed valid /
-// invalid inputs, the decompression-bomb output cap, and the plaintext no-op.
+// decrypt round-trips into the plaintext sibling (armored and binary), source
+// preservation, resilient walk over mixed valid / invalid sources, the
+// decompression-bomb output cap, and the plaintext-output no-op.
 
-// Property 1: Armored encrypt → decrypt produces identical bytes.
+// drawEnvContent draws random .env-shaped plaintext.
+func drawEnvContent(rt *rapid.T, maxPairs int) []byte {
+	numPairs := rapid.IntRange(1, maxPairs).Draw(rt, "numPairs")
+	var lines []string
+	for i := range numPairs {
+		key := rapid.StringMatching(`[A-Z][A-Z0-9_]{0,19}`).Draw(rt, fmt.Sprintf("key_%d", i))
+		value := rapid.StringMatching(`[a-zA-Z0-9_\-\./:@=+, ]{0,50}`).Draw(rt, fmt.Sprintf("value_%d", i))
+		lines = append(lines, key+"="+value)
+	}
+	return []byte(strings.Join(lines, "\n") + "\n")
+}
+
+// Property 1: Armored encrypt → decrypt produces identical bytes at the
+// sibling output, and the ciphertext source survives byte-for-byte.
 func TestProperty_ArmoredRoundTrip(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		identity, err := age.GenerateX25519Identity()
 		if err != nil {
 			rt.Fatalf("generate identity: %v", err)
 		}
-
-		numPairs := rapid.IntRange(1, 10).Draw(rt, "numPairs")
-		var lines []string
-		for i := range numPairs {
-			key := rapid.StringMatching(`[A-Z][A-Z0-9_]{0,19}`).Draw(rt, fmt.Sprintf("key_%d", i))
-			value := rapid.StringMatching(`[a-zA-Z0-9_\-\./:@=+, ]{0,50}`).Draw(rt, fmt.Sprintf("value_%d", i))
-			lines = append(lines, key+"="+value)
-		}
-		original := []byte(strings.Join(lines, "\n") + "\n")
+		original := drawEnvContent(rt, 10)
 
 		tmpDir, err := os.MkdirTemp("", "age-roundtrip-*")
 		if err != nil {
@@ -43,8 +49,8 @@ func TestProperty_ArmoredRoundTrip(t *testing.T) {
 		if err != nil {
 			rt.Fatalf("encrypt: %v", err)
 		}
-		envPath := filepath.Join(tmpDir, "test.env")
-		if err := os.WriteFile(envPath, encrypted, 0o644); err != nil {
+		srcPath := filepath.Join(tmpDir, "test.env"+encSuffix)
+		if err := os.WriteFile(srcPath, encrypted, 0o644); err != nil {
 			rt.Fatalf("write: %v", err)
 		}
 
@@ -56,33 +62,32 @@ func TestProperty_ArmoredRoundTrip(t *testing.T) {
 			rt.Fatalf("count = %d, want 1", count)
 		}
 
-		decrypted, err := os.ReadFile(envPath)
+		decrypted, err := os.ReadFile(filepath.Join(tmpDir, "test.env"))
 		if err != nil {
 			rt.Fatalf("read decrypted: %v", err)
 		}
 		if !bytes.Equal(decrypted, original) {
 			rt.Fatalf("mismatch:\n  original:  %q\n  decrypted: %q", original, decrypted)
 		}
+		srcAfter, err := os.ReadFile(srcPath)
+		if err != nil {
+			rt.Fatalf("read source: %v", err)
+		}
+		if !bytes.Equal(srcAfter, encrypted) {
+			rt.Fatal("ciphertext source was modified by the decrypt pass")
+		}
 	})
 }
 
-// Property 2: Binary-encrypted files are also decrypted in place.
+// Property 2: Binary-encrypted sources also decrypt to the sibling, source
+// preserved.
 func TestProperty_BinaryRoundTrip(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		identity, err := age.GenerateX25519Identity()
 		if err != nil {
 			rt.Fatalf("generate identity: %v", err)
 		}
-
-		// Draw random content to verify binary format handles arbitrary bytes.
-		numPairs := rapid.IntRange(1, 10).Draw(rt, "numPairs")
-		var lines []string
-		for i := range numPairs {
-			key := rapid.StringMatching(`[A-Z][A-Z0-9_]{0,19}`).Draw(rt, fmt.Sprintf("key_%d", i))
-			value := rapid.StringMatching(`[a-zA-Z0-9_\-\./:@=+, ]{0,50}`).Draw(rt, fmt.Sprintf("value_%d", i))
-			lines = append(lines, key+"="+value)
-		}
-		original := []byte(strings.Join(lines, "\n") + "\n")
+		original := drawEnvContent(rt, 10)
 
 		encrypted, err := encryptBinary(original, identity.Recipient())
 		if err != nil {
@@ -95,8 +100,8 @@ func TestProperty_BinaryRoundTrip(t *testing.T) {
 		}
 		defer func() { _ = os.RemoveAll(tmpDir) }()
 
-		envPath := filepath.Join(tmpDir, "test.env")
-		if err := os.WriteFile(envPath, encrypted, 0o644); err != nil {
+		srcPath := filepath.Join(tmpDir, "test.env"+encSuffix)
+		if err := os.WriteFile(srcPath, encrypted, 0o644); err != nil {
 			rt.Fatalf("write: %v", err)
 		}
 
@@ -108,17 +113,26 @@ func TestProperty_BinaryRoundTrip(t *testing.T) {
 			rt.Fatalf("count = %d, want 1", count)
 		}
 
-		decrypted, err := os.ReadFile(envPath)
+		decrypted, err := os.ReadFile(filepath.Join(tmpDir, "test.env"))
 		if err != nil {
 			rt.Fatalf("read: %v", err)
 		}
 		if !bytes.Equal(decrypted, original) {
 			rt.Fatalf("mismatch:\n  original:  %q\n  decrypted: %q", original, decrypted)
 		}
+		srcAfter, err := os.ReadFile(srcPath)
+		if err != nil {
+			rt.Fatalf("read source: %v", err)
+		}
+		if !bytes.Equal(srcAfter, encrypted) {
+			rt.Fatal("ciphertext source was modified by the decrypt pass")
+		}
 	})
 }
 
-// Property 3: Valid files decrypt in place, invalid files are skipped.
+// Property 3: Valid sources decrypt to their siblings; invalid .enc sources
+// (plaintext, empty, garbage) fail without being modified and without
+// producing any output sibling.
 func TestProperty_ResilientWalk(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		identity, err := age.GenerateX25519Identity()
@@ -132,10 +146,11 @@ func TestProperty_ResilientWalk(t *testing.T) {
 		}
 		defer func() { _ = os.RemoveAll(tmpDir) }()
 
-		// Create valid encrypted .env files (some in subdirectories)
+		// Valid encrypted sources (some in subdirectories).
 		numValid := rapid.IntRange(1, 5).Draw(rt, "numValid")
 		type validFile struct {
-			path    string
+			src     string
+			out     string
 			content []byte
 		}
 		validFiles := make([]validFile, 0, numValid)
@@ -150,20 +165,23 @@ func TestProperty_ResilientWalk(t *testing.T) {
 				dir = filepath.Join(tmpDir, fmt.Sprintf("sub%d", i))
 				_ = os.MkdirAll(dir, 0o755)
 			}
-			p := filepath.Join(dir, fmt.Sprintf("valid%d.env", i))
-			_ = os.WriteFile(p, encrypted, 0o644)
-			validFiles = append(validFiles, validFile{path: p, content: content})
+			out := filepath.Join(dir, fmt.Sprintf("valid%d.env", i))
+			src := out + encSuffix
+			_ = os.WriteFile(src, encrypted, 0o644)
+			validFiles = append(validFiles, validFile{src: src, out: out, content: content})
 		}
 
-		// Create invalid .env files that should be skipped
+		// Invalid .enc sources: fail, never modified, no sibling produced.
 		numInvalid := rapid.IntRange(1, 5).Draw(rt, "numInvalid")
 		type invalidFile struct {
-			path string
+			src  string
+			out  string
 			data []byte
 		}
 		invalidFiles := make([]invalidFile, 0, numInvalid)
 		for i := range numInvalid {
-			p := filepath.Join(tmpDir, fmt.Sprintf("invalid%d.env", i))
+			out := filepath.Join(tmpDir, fmt.Sprintf("invalid%d.env", i))
+			src := out + encSuffix
 			kind := rapid.SampledFrom([]string{"plaintext", "empty", "binary"}).Draw(rt, fmt.Sprintf("kind_%d", i))
 			var data []byte
 			switch kind {
@@ -174,79 +192,86 @@ func TestProperty_ResilientWalk(t *testing.T) {
 			case "binary":
 				data = rapid.SliceOfN(rapid.Byte(), 10, 200).Draw(rt, fmt.Sprintf("garbage_%d", i))
 			}
-			_ = os.WriteFile(p, data, 0o644)
-			invalidFiles = append(invalidFiles, invalidFile{path: p, data: data})
+			// Guard against rapid drawing bytes that happen to start with a
+			// real age header (astronomically unlikely; cheap to exclude).
+			if detectAgeFormat(data) != notAgeFormat {
+				data = append([]byte("x"), data...)
+			}
+			_ = os.WriteFile(src, data, 0o644)
+			invalidFiles = append(invalidFiles, invalidFile{src: src, out: out, data: data})
 		}
 
-		// Non-.env files should be ignored entirely
+		// Non-.enc files are ignored entirely.
 		_ = os.WriteFile(filepath.Join(tmpDir, "readme.txt"), []byte("ignored"), 0o644)
 
-		count, err := decryptAllCount(tmpDir, identity)
+		result, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, nil)
 		if err != nil {
 			rt.Fatalf("decryptAll error: %v", err)
 		}
-		if count != numValid {
-			rt.Fatalf("count = %d, want %d", count, numValid)
+		if result.Decrypted != numValid {
+			rt.Fatalf("Decrypted = %d, want %d", result.Decrypted, numValid)
+		}
+		if result.Failed != numInvalid {
+			rt.Fatalf("Failed = %d, want %d (invalid .enc sources)", result.Failed, numInvalid)
 		}
 
 		for _, vf := range validFiles {
-			got, err := os.ReadFile(vf.path)
+			got, err := os.ReadFile(vf.out)
 			if err != nil {
 				rt.Fatalf("read decrypted: %v", err)
 			}
 			if !bytes.Equal(got, vf.content) {
-				rt.Fatalf("mismatch for %s:\n  want: %q\n  got:  %q", vf.path, vf.content, got)
+				rt.Fatalf("mismatch for %s:\n  want: %q\n  got:  %q", vf.out, vf.content, got)
 			}
 		}
 
 		for _, inf := range invalidFiles {
-			got, err := os.ReadFile(inf.path)
+			got, err := os.ReadFile(inf.src)
 			if err != nil {
 				rt.Fatalf("read invalid: %v", err)
 			}
 			if !bytes.Equal(got, inf.data) {
-				rt.Fatalf("invalid file %s was modified", inf.path)
+				rt.Fatalf("invalid source %s was modified", inf.src)
+			}
+			if _, err := os.Stat(inf.out); err == nil {
+				rt.Fatalf("invalid source %s produced an output sibling", inf.src)
 			}
 		}
 	})
 }
 
-// Property 4: Oversized decrypted content is rejected (decompression bomb guard).
+// Property 4: Oversized decrypted content is rejected (decompression bomb
+// guard) — no output sibling, source preserved.
 func TestProperty_OversizedDecryptedContent(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
-	// Create a 2 MB plaintext (exceeds the 1 MB limit)
+	// A 2 MB plaintext (exceeds the 1 MB output limit).
 	bigContent := bytes.Repeat([]byte("A"), 2<<20)
 	encrypted, err := encryptArmored(bigContent, identity.Recipient())
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	envPath := filepath.Join(tmpDir, "big.env")
-	if err := os.WriteFile(envPath, encrypted, 0o644); err != nil {
+	srcPath := filepath.Join(tmpDir, "big.env"+encSuffix)
+	if err := os.WriteFile(srcPath, encrypted, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
-	count, err := decryptAllCount(tmpDir, identity)
+	result, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
-	if count != 0 {
-		t.Fatalf("count = %d, want 0 (oversized file should be skipped)", count)
+	if result.Decrypted != 0 || result.Failed != 1 {
+		t.Fatalf("Decrypted=%d Failed=%d, want 0 and 1 (oversized output)", result.Decrypted, result.Failed)
 	}
-
-	// File should remain encrypted (not overwritten)
-	data, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if !bytes.HasPrefix(data, []byte(armoredHeader)) {
-		t.Error("oversized file should not have been overwritten")
-	}
+	assertNoOutput(t, filepath.Join(tmpDir, "big.env"))
+	assertSourcePreserved(t, srcPath, encrypted)
 }
 
-// Property: decrypting a plaintext .env file is always a no-op (file unchanged).
-func TestProperty_DecryptFile_plaintext_is_noop(t *testing.T) {
+// Property: under --ext, a plaintext file at the output path (the generated
+// sibling of a previous pass, or a committed plaintext config) is always a
+// no-op skip — never modified, never failed.
+func TestProperty_PlaintextOutput_is_noop(t *testing.T) {
 	identity := newIdentity(t)
 
 	rapid.Check(t, func(rt *rapid.T) {
@@ -256,39 +281,26 @@ func TestProperty_DecryptFile_plaintext_is_noop(t *testing.T) {
 		}
 		defer func() { _ = os.RemoveAll(tmpDir) }()
 
-		// Generate random plaintext .env content that doesn't start with age headers
-		numPairs := rapid.IntRange(1, 5).Draw(rt, "numPairs")
-		var lines []string
-		for i := range numPairs {
-			key := rapid.StringMatching(`[A-Z][A-Z0-9_]{0,9}`).Draw(rt, fmt.Sprintf("key_%d", i))
-			value := rapid.StringMatching(`[a-zA-Z0-9_\-]{0,20}`).Draw(rt, fmt.Sprintf("val_%d", i))
-			lines = append(lines, key+"="+value)
-		}
-		content := []byte(strings.Join(lines, "\n") + "\n")
-
-		envPath := filepath.Join(tmpDir, "plain.env")
-		if err := os.WriteFile(envPath, content, 0o644); err != nil {
+		content := drawEnvContent(rt, 5)
+		outPath := filepath.Join(tmpDir, "plain.env")
+		if err := os.WriteFile(outPath, content, 0o644); err != nil {
 			rt.Fatalf("write: %v", err)
 		}
 
-		rootDir, openErr := os.OpenRoot(tmpDir)
-		if openErr != nil {
-			rt.Fatalf("OpenRoot: %v", openErr)
+		result, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, []string{".env"})
+		if err != nil {
+			rt.Fatalf("decryptAll: %v", err)
 		}
-		defer func() { _ = rootDir.Close() }()
-
-		got := decryptFileBool(rootDir, "plain.env", identity)
-		if got {
-			rt.Fatal("decryptFile(plaintext) = true, want false")
+		if result.Skipped != 1 || result.Failed != 0 || result.Decrypted != 0 {
+			rt.Fatalf("result = %+v, want Skipped=1 only", result)
 		}
 
-		// File must be unchanged
-		after, readErr := os.ReadFile(envPath)
+		after, readErr := os.ReadFile(outPath)
 		if readErr != nil {
 			rt.Fatalf("read: %v", readErr)
 		}
 		if !bytes.Equal(after, content) {
-			rt.Fatalf("plaintext file was modified: got %q, want %q", after, content)
+			rt.Fatalf("plaintext output was modified: got %q, want %q", after, content)
 		}
 	})
 }

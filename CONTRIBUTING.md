@@ -7,11 +7,12 @@ fallback applies; this file covers what's particular to the code here.
 ## What this is
 
 A single static Go binary (`age-decrypt`) shipped on
-`gcr.io/distroless/static:nonroot`. It walks a mounted tree,
-decrypts every age-encrypted `.env` in place, and skips everything else.
-The module path is `github.com/cplieger/age-decrypt/v2` even though the repo
-and image are named `docker-age` — the binary name, not the repo name, is
-the canonical identifier.
+`gcr.io/distroless/static:nonroot`. It walks a mounted tree, reads tracked
+`<name>.enc` age ciphertext, and atomically generates the canonical plaintext
+sibling `<name>` (for example `.env.enc` → `.env`). Ciphertext is never
+modified; generated plaintext is expected to be gitignored. The module path is
+`github.com/cplieger/age-decrypt/v3` even though the repo and image are named
+`docker-age` — the binary name, not the repo name, is the canonical identifier.
 
 ## Layout
 
@@ -29,8 +30,9 @@ Flat `package main`, one concern per file:
   file, returning `[]age.Identity` (the interface, not a concrete key type) so
   future key kinds don't churn callers and multiple identities enable key
   rotation. Caps the key file at 1 MB.
-- `decrypt.go` — the core: `decryptAll` walks the tree and `decryptFile`
-  handles one file.
+- `decrypt.go` — the core: candidate/name validation, safe source opens,
+  decrypt limits, random exclusive temp publication, strict orphan cleanup,
+  and the fail-closed tree walk.
 
 ## Load-bearing invariants
 
@@ -38,29 +40,37 @@ These are easy to break and the tests exist to catch them. Read this
 before touching `decrypt.go`.
 
 - **All tree I/O goes through the `*os.Root` handle.** `decryptAll` opens
-  the tree with `os.OpenRoot` and every open/write/rename uses the `rootDir`
-  handle: `rootDir.Open` (reads stream through a bounded `io.LimitReader`,
-  not a `Stat`+`ReadFile`, which also enforces the size cap on bytes actually
-  read), `rootDir.WriteFile`, `rootDir.Rename`. This confines I/O to the
-  mounted tree and blocks symlink escapes. Do not reach for the bare `os`
-  package for paths inside the tree.
-- **Temp file names must stay unique per call and carry the marker.**
-  `decryptFile` names its temp file `<rel>.<pid>.<counter>.age-decrypt-tmp`
-  (the `tmpSuffix` marker) using the PID plus a process-local atomic counter
-  (`tmpCounter`). The PID+counter keep concurrent peers from colliding (a
-  shared name reintroduces the production rename-vs-sweep race); the
-  `tmpSuffix` marker is how the orphan sweep recognizes the tool's own temps
-  for any extension without ever matching a user's file. Keep both.
-- **`decryptFile` is tri-state, and skips are not failures.** It returns
-  `fileSkipped` (not age-formatted — legitimate, logged at debug),
-  `fileDecrypted`, or `fileFailed`. In **decrypt mode** (`runDecrypt`,
-  the `decrypt` subcommand) the process exits non-zero when
-  `result.Failed > 0` **or** when the repo root itself is unreadable: a
-  root-level `WalkDir` error (e.g. a stale mount, `readdirent /repo: no such
-file or directory`) is fatal, so a stale `/repo` fails loudly instead of
-  reporting a clean `decrypted=0` / exit 0. Per-subdirectory walk errors stay
-  non-fatal (logged, the walk continues). A tree of plaintext files (no age headers) —
-  or a legitimately empty tree — is still a clean run.
+  the tree with `os.OpenRoot`; reads use a nonblocking rooted descriptor plus
+  before/open/after inode checks and reject nonregular or multiply-linked
+  sources. Ciphertext is streamed through bounded readers. Plaintext is
+  written only through a newly created rooted descriptor and published with
+  `rootDir.Rename`. Do not add a bare path open/write for files inside the
+  walked tree.
+- **Temp creation is random and exclusive.** New names are
+  `<output>.<32-lowercase-hex-chars>.age-decrypt-tmp` (128 random bits), opened
+  with `O_CREATE|O_EXCL` at 0600. All bytes go through that owned descriptor;
+  mode 0600 and link count 1 are rechecked before rename. Never replace this
+  with `WriteFile` or a predictable name: either can truncate a pre-seeded
+  regular file, symlink target, or hardlink to the ciphertext source.
+- **The temp namespace and cleanup checks move together.** The orphan sweep
+  recognizes only the random v3 grammar and strict legacy
+  `<output>.<pid>.<counter>` grammar, and touches only stale regular 0600
+  single-link files. Failed-write cleanup truncates the owned/verified inode,
+  never an unchecked path. The namespace is reserved and the checkout is
+  assumed stable against untrusted mutation during a pass; concurrent
+  `age-decrypt` peers are supported.
+- **`decryptFile` is tri-state, but `.enc` content never silently skips.** It
+  returns `fileDecrypted`, `fileFailed`, or `fileSkipped` only for cancellation.
+  A `.enc` source that is non-age, malformed, unreadable, nonregular, or cannot
+  publish its sibling is a failure. In decrypt mode the process exits non-zero
+  when `result.Failed > 0`, on any walk error, cancellation, or unreadable root.
+  Under `--ext`, matching non-`.enc` regular plaintext counts as skipped; stray
+  ciphertext and matching nonregular paths fail. A legitimately empty tree is
+  still a clean run with a no-match warning.
+- **Name validation precedes filtering.** Bare `.enc` and double
+  `.enc.enc` names fail even when `--ext` would otherwise exclude them.
+  `--ext` filters the post-strip output name for walks and explicit files;
+  path-like/whitespace values are rejected, and stdin cannot use `--ext`.
 - **Server mode idles; it performs no startup decrypt.** `runServer`
   sets the health marker healthy (`marker.Set(true)`) and blocks on the
   signal context until SIGINT/SIGTERM, then cleans up on shutdown.
@@ -78,16 +88,14 @@ file or directory`) is fatal, so a stale `/repo` fails loudly instead of
   `age.Decrypt`. Returning only the first, or threading a single
   `age.Identity` through, silently breaks key rotation — a file encrypted to
   the second key would fail. Keep the slice end-to-end.
-- **Decryption is idempotent.** Format is detected by the first bytes
-  (armored `-----BEGIN AGE ENCRYPTED FILE-----` vs binary
-  `age-encryption.org/v1`); a previously-decrypted file is plaintext and
-  gets skipped on the next pass.
-- **Size caps are intentional.** Encrypted input is capped at 10 MB and
-  decrypted output at 1 MB (decompression-bomb guard). The key file is
-  capped at 1 MB. Don't loosen these without a reason.
-- **The orphan-tmp sweep is age-bound.** `sweepOrphanTmpFile` only removes
-  temp files older than the 10-minute `staleThreshold`, so it never rips a
-  temp out from under a concurrent peer mid-decrypt.
+- **Decryption is repeatable, not in-place-idempotent.** Every pass reads the
+  unchanged `.enc` source and atomically refreshes the plaintext sibling. A
+  plaintext payload under a `.enc` name is a failure. Under `--ext`, a regular
+  plaintext output is accepted; if its sibling source exists, that source's
+  result gates the pass so stale ciphertext is repaired in one run.
+- **Size caps are per file.** Encrypted input is capped at 10 MB,
+  decrypted output at 1 MB, and the key file at 1 MB. There is no aggregate
+  pass budget; deployment controls own tree size and invocation frequency.
 
 ## Local development
 
@@ -142,6 +150,9 @@ docker build -t age-decrypt .
 
 ## Gotchas
 
+- A pre-existing plaintext sibling is intentionally replaced, even if it is
+  tracked by git. Ignore rules do not untrack files: migrations must remove
+  secret outputs from the index or every decrypt will dirty the checkout.
 - `# nosec G304` in `identity.go` is deliberate: the key path is
   operator-supplied, not untrusted input. Keep the explanation comment if
   you move the line — `nolintlint` requires it.

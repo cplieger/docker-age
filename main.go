@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -17,6 +18,11 @@ func main() {
 	// CLI health probe for Docker healthcheck (distroless has no curl/wget).
 	if len(os.Args) > 1 && os.Args[1] == modeHealth {
 		health.RunProbe(health.DefaultPath)
+		// RunProbe always exits the process (health lib contract). The explicit
+		// return makes that invariant local and structural: the probe process
+		// can never fall through into parseConfig (which would exit 2 without
+		// AGE_KEY_FILE) or the server path.
+		return
 	}
 
 	rawLevel := os.Getenv("AGE_LOG_LEVEL")
@@ -84,13 +90,13 @@ func runServer(ctx context.Context) int {
 // runDecrypt handles all decrypt invocations:
 //   - no targets AND no --ext: error (you must say what to decrypt)
 //   - target "-": stdin/stdout pipe (single file, no disk I/O)
-//   - target is a file: decrypt that one file in place
+//   - target is a file: decrypt that one .enc source to its plaintext sibling
 //   - target is a dir: walk that subtree (filtered by --ext if set)
 //   - --ext with no targets: walk RepoRoot filtered by the given extensions
 func runDecrypt(ctx context.Context, cfg *config, identities []age.Identity) int {
 	// Pipe mode: stdin → decrypt → stdout
 	if len(cfg.Targets) == 1 && cfg.Targets[0] == "-" {
-		return runDecryptStdin(identities)
+		return runDecryptStdin(ctx, identities)
 	}
 
 	// Must specify what to decrypt.
@@ -148,20 +154,32 @@ func runDecrypt(ctx context.Context, cfg *config, identities []age.Identity) int
 	return 0
 }
 
-// decryptRoot processes one decrypt target. A non-directory is decrypted as a
-// single named file (a non-age file is a legitimate skip, logged once unless
-// the context was canceled mid-pass); a directory is walked by decryptAll. It
-// returns the per-target outcome counts, and a non-nil error only for a fatal
-// condition — the target is inaccessible, or its directory root is unreadable —
-// which must block the whole pass.
+// decryptRoot processes one decrypt target. A non-directory must be a regular
+// .enc ciphertext source; malformed and nonregular targets are fatal. If
+// --ext is present, the same post-strip output-name filter used by a tree walk
+// applies and an out-of-scope explicit file is skipped. A directory is walked
+// by decryptAll. A non-nil error is a fatal condition that blocks the pass.
 func decryptRoot(ctx context.Context, root string, identities []age.Identity, extensions []string) (decryptResult, error) {
-	info, err := os.Stat(root)
+	info, err := os.Lstat(root)
 	if err != nil {
 		slog.Error("target not accessible", "path", root, "error", err)
 		return decryptResult{}, err
 	}
 	if info.IsDir() {
 		return decryptAll(ctx, root, identities, extensions)
+	}
+	if !info.Mode().IsRegular() {
+		targetErr := fmt.Errorf("target must be a directory or a regular %s ciphertext source (mode %s)", encSuffix, info.Mode())
+		slog.Error("invalid target", "path", root, "mode", info.Mode(), "error", targetErr)
+		return decryptResult{}, targetErr
+	}
+	out, err := outputRelFor(root)
+	if err != nil {
+		slog.Error("invalid file target", "path", root, "error", err)
+		return decryptResult{}, err
+	}
+	if !matchesAnyExt(filepath.Base(out), extensions) {
+		return decryptResult{}, nil
 	}
 
 	var result decryptResult
@@ -171,15 +189,15 @@ func decryptRoot(ctx context.Context, root string, identities []age.Identity, ex
 	case fileFailed:
 		result.Failed++
 	case fileSkipped:
+		// Only reachable when the context was canceled before the file was
+		// processed; the caller's post-loop cancellation guard turns the
+		// partial pass into a non-zero exit.
 		result.Skipped++
-		if ctx.Err() == nil {
-			slog.Info("named file is not age-encrypted, left unchanged", "path", root)
-		}
 	}
 	return result, nil
 }
 
-// decryptSingleFile decrypts one explicitly-named file in place.
+// decryptSingleFile decrypts one explicitly-named .enc source to its sibling.
 func decryptSingleFile(ctx context.Context, path string, identities []age.Identity) fileStatus {
 	dir := filepath.Dir(path)
 	rootDir, err := os.OpenRoot(dir)
@@ -198,7 +216,9 @@ func logDecryptResult(msg string, result decryptResult) {
 }
 
 func warnIfNoFilesSeen(result decryptResult, repoRoot string, targets []string) {
-	if result.Decrypted != 0 || result.Failed != 0 || result.Skipped != 0 {
+	// Walk errors already explain why no files were seen (and independently
+	// fail the pass), so the mount/path hint would only mislead there.
+	if result.Decrypted != 0 || result.Failed != 0 || result.Skipped != 0 || result.WalkErrors != 0 {
 		return
 	}
 	if len(targets) == 0 {

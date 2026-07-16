@@ -1,6 +1,6 @@
 # Example compose for docker-age. See the README for all configuration options and hardening.
-# Long-lived server (no command); trigger an in-place decrypt pass with:
-#   docker exec age /age-decrypt decrypt --ext .env
+# Example compose for docker-age. See the README for all configuration options and hardening.
+# Trigger (.env.enc -> .env): docker exec age /age-decrypt decrypt --ext .env
 services:
   age:
     image: ghcr.io/cplieger/docker-age:latest

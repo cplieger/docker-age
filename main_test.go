@@ -8,7 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 	"github.com/cplieger/slogx/capture"
@@ -22,14 +25,10 @@ import (
 
 // --- decryptSingleFile ---
 
-func TestDecryptSingleFile(t *testing.T) {
-	identity, err := age.GenerateX25519Identity()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Create an encrypted file
+func TestDecryptSingleFile_writes_sibling(t *testing.T) {
+	identity := newIdentity(t)
 	tmpDir := t.TempDir()
+
 	plaintext := []byte("secret-content\n")
 	var buf bytes.Buffer
 	w, err := age.Encrypt(&buf, identity.Recipient())
@@ -39,58 +38,56 @@ func TestDecryptSingleFile(t *testing.T) {
 	_, _ = w.Write(plaintext)
 	_ = w.Close()
 
-	envFile := filepath.Join(tmpDir, "test.env")
-	if err := os.WriteFile(envFile, buf.Bytes(), 0o600); err != nil {
+	srcPath := filepath.Join(tmpDir, "test.env"+encSuffix)
+	if err := os.WriteFile(srcPath, buf.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	// Decrypt the single file
-	status := decryptSingleFile(context.Background(), envFile, []age.Identity{identity})
+	status := decryptSingleFile(context.Background(), srcPath, []age.Identity{identity})
 	if status != fileDecrypted {
 		t.Fatalf("decryptSingleFile = %v, want fileDecrypted", status)
 	}
 
-	// Verify content
-	got, err := os.ReadFile(envFile)
+	got, err := os.ReadFile(filepath.Join(tmpDir, "test.env"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(got, plaintext) {
-		t.Errorf("decrypted content = %q, want %q", got, plaintext)
+		t.Errorf("decrypted output = %q, want %q", got, plaintext)
 	}
+	assertSourcePreserved(t, srcPath, buf.Bytes())
 }
 
-func TestDecryptSingleFile_nonAgeSkipped(t *testing.T) {
+// A named .enc source holding plaintext is a broken workflow: fileFailed (the
+// v2 "legitimate skip" for non-age named files does not survive the flip —
+// only .enc sources may be named, and a .enc source must be ciphertext).
+func TestDecryptSingleFile_plaintext_enc_fails(t *testing.T) {
 	tmpDir := t.TempDir()
-	plainFile := filepath.Join(tmpDir, "plain.txt")
-	if err := os.WriteFile(plainFile, []byte("not encrypted"), 0o644); err != nil {
+	srcPath := filepath.Join(tmpDir, "plain.env"+encSuffix)
+	if err := os.WriteFile(srcPath, []byte("not encrypted"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	identity, _ := age.GenerateX25519Identity()
-	status := decryptSingleFile(context.Background(), plainFile, []age.Identity{identity})
-	if status != fileSkipped {
-		t.Errorf("decryptSingleFile(plaintext) = %v, want fileSkipped", status)
+	identity := newIdentity(t)
+	status := decryptSingleFile(context.Background(), srcPath, []age.Identity{identity})
+	if status != fileFailed {
+		t.Errorf("decryptSingleFile(plaintext .enc) = %v, want fileFailed", status)
 	}
+	assertNoOutput(t, filepath.Join(tmpDir, "plain.env"))
 }
 
 // TestDecryptSingleFile_parent_not_a_directory_returns_failed covers
-// decryptSingleFile's os.OpenRoot-failure branch (main.go:144-146), previously
-// uncovered (decryptSingleFile 75.0%). decryptSingleFile confines I/O to the
-// named file's parent via os.OpenRoot(filepath.Dir(path)); when that parent is
-// not a directory, OpenRoot fails (ENOTDIR) and the function must fail the file
-// gracefully (fileFailed) rather than panic. The branch is deterministically
-// reached by naming a target whose parent path component is a regular file.
+// decryptSingleFile's os.OpenRoot-failure branch: naming a target whose parent
+// path component is a regular file makes OpenRoot fail (ENOTDIR), and the
+// function must fail the file gracefully rather than panic.
 func TestDecryptSingleFile_parent_not_a_directory_returns_failed(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
-	// A regular file standing in for a parent directory.
 	notDir := filepath.Join(tmpDir, "regular")
 	if err := os.WriteFile(notDir, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	// filepath.Dir(bogus) == notDir (a regular file) -> os.OpenRoot fails (ENOTDIR).
-	bogus := filepath.Join(notDir, "child.env")
+	bogus := filepath.Join(notDir, "child.env"+encSuffix)
 
 	got := decryptSingleFile(context.Background(), bogus, []age.Identity{identity})
 	if got != fileFailed {
@@ -112,65 +109,50 @@ func TestRunDecrypt_bareDecryptErrors(t *testing.T) {
 }
 
 func TestRunDecrypt_withExtWalksTree(t *testing.T) {
-	identity, _ := age.GenerateX25519Identity()
+	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
-	// Create an encrypted .env file
-	var buf bytes.Buffer
-	w, _ := age.Encrypt(&buf, identity.Recipient())
-	_, _ = w.Write([]byte("SECRET=value\n"))
-	_ = w.Close()
-	_ = os.WriteFile(filepath.Join(tmpDir, "app.env"), buf.Bytes(), 0o600)
+	srcEnv, outEnv := writeEncSource(t, tmpDir, "app.env", []byte("SECRET=value\n"), identity.Recipient())
+	srcYaml, outYaml := writeEncSource(t, tmpDir, "config.yaml", []byte("key: value\n"), identity.Recipient())
+	yamlBefore, err := os.ReadFile(srcYaml)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
 
-	// Create an encrypted .yaml (should NOT be decrypted with --ext .env)
-	var buf2 bytes.Buffer
-	w2, _ := age.Encrypt(&buf2, identity.Recipient())
-	_, _ = w2.Write([]byte("key: value\n"))
-	_ = w2.Close()
-	_ = os.WriteFile(filepath.Join(tmpDir, "config.yaml"), buf2.Bytes(), 0o600)
-
-	// Run with --ext .env (explicit)
 	cfg := &config{RepoRoot: tmpDir, Extensions: []string{".env"}}
 	code := runDecrypt(context.Background(), cfg, []age.Identity{identity})
 	if code != 0 {
 		t.Fatalf("runDecrypt = %d, want 0", code)
 	}
 
-	// .env decrypted
-	got, _ := os.ReadFile(filepath.Join(tmpDir, "app.env"))
+	// .env.enc decrypted to the .env sibling.
+	got, _ := os.ReadFile(outEnv)
 	if string(got) != "SECRET=value\n" {
-		t.Errorf(".env content = %q, want decrypted", got)
+		t.Errorf(".env output = %q, want decrypted", got)
 	}
 
-	// .yaml remains encrypted
-	gotYaml, _ := os.ReadFile(filepath.Join(tmpDir, "config.yaml"))
-	if !bytes.HasPrefix(gotYaml, []byte(ageHeader)) {
-		t.Errorf(".yaml should NOT have been decrypted, but it was")
-	}
+	// .yaml.enc untouched, no .yaml output.
+	assertSourcePreserved(t, srcYaml, yamlBefore)
+	assertNoOutput(t, outYaml)
+	_ = srcEnv
 }
 
 func TestRunDecrypt_withTargetNoExtDecryptsAll(t *testing.T) {
-	identity, _ := age.GenerateX25519Identity()
+	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
-	// Create an encrypted .yaml (explicit target path = no ext filter needed)
-	var buf bytes.Buffer
-	w, _ := age.Encrypt(&buf, identity.Recipient())
-	_, _ = w.Write([]byte("key: value\n"))
-	_ = w.Close()
-	yamlPath := filepath.Join(tmpDir, "config.yaml")
-	_ = os.WriteFile(yamlPath, buf.Bytes(), 0o600)
+	_, out := writeEncSource(t, tmpDir, "config.yaml", []byte("key: value\n"), identity.Recipient())
 
-	// Run with explicit target (no --ext needed)
-	cfg := &config{RepoRoot: tmpDir, Targets: []string{yamlPath}}
+	// Explicit dir target: all .enc sources are candidates (no --ext needed).
+	cfg := &config{RepoRoot: t.TempDir(), Targets: []string{tmpDir}}
 	code := runDecrypt(context.Background(), cfg, []age.Identity{identity})
 	if code != 0 {
 		t.Fatalf("runDecrypt = %d, want 0", code)
 	}
 
-	got, _ := os.ReadFile(yamlPath)
+	got, _ := os.ReadFile(out)
 	if string(got) != "key: value\n" {
-		t.Errorf("explicit target content = %q, want decrypted", got)
+		t.Errorf("explicit dir target output = %q, want decrypted", got)
 	}
 }
 
@@ -178,8 +160,7 @@ func TestRunSubcommand_returns_zero_on_success(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
-	original := []byte("SUB_KEY=value\n")
-	writeEncryptedEnv(t, tmpDir, "app.env", original, identity.Recipient())
+	writeEncSource(t, tmpDir, "app.env", []byte("SUB_KEY=value\n"), identity.Recipient())
 
 	code := runDecrypt(context.Background(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{identity})
 	if code != 0 {
@@ -193,7 +174,7 @@ func TestRunSubcommand_returns_one_on_decrypt_failure(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Encrypt with one key, decrypt with another — produces Failed > 0.
-	writeEncryptedEnv(t, tmpDir, "secret.env", []byte("S=v\n"), encryptID.Recipient())
+	writeEncSource(t, tmpDir, "secret.env", []byte("S=v\n"), encryptID.Recipient())
 
 	code := runDecrypt(context.Background(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{decryptID})
 	if code != 1 {
@@ -211,13 +192,25 @@ func TestRunSubcommand_returns_one_on_invalid_root(t *testing.T) {
 	}
 }
 
-// TestRunDecrypt_singleFileTarget_nonAge_exits_zero pins the documented
-// single-file-target contract (README: "decrypt /path/to/file.env"): a named
-// file that is NOT age-encrypted is a legitimate skip, not a failure, so the
-// deploy gate sees exit 0 (re-running a deploy over an already-decrypted file
-// must not block it). Exercises runDecrypt's fileSkipped arm (main.go ~106-108),
-// previously uncovered.
-func TestRunDecrypt_singleFileTarget_nonAge_exits_zero(t *testing.T) {
+// A stray ciphertext file at a plaintext path (un-migrated secret) must block
+// the deploy: the pass exits 1 even though every .enc source decrypted fine.
+func TestRunDecrypt_stray_ciphertext_blocks_deploy(t *testing.T) {
+	identity := newIdentity(t)
+	tmpDir := t.TempDir()
+
+	writeEncSource(t, tmpDir, "app.env", []byte("OK=1\n"), identity.Recipient())
+	writeEncryptedEnv(t, tmpDir, "legacy.env", []byte("UNMIGRATED=1\n"), identity.Recipient())
+
+	code := runDecrypt(context.Background(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{identity})
+	if code != 1 {
+		t.Errorf("runDecrypt(stray ciphertext at legacy.env) = %d, want 1 (deploy-blocking)", code)
+	}
+}
+
+// An explicit file target that does not name a .enc source is a fatal caller
+// error (exit 1): under the sibling-output model the tool never writes a
+// plaintext path directly.
+func TestRunDecrypt_singleFileTarget_nonEnc_exits_one(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 	plainPath := filepath.Join(tmpDir, "plain.env")
@@ -226,8 +219,8 @@ func TestRunDecrypt_singleFileTarget_nonAge_exits_zero(t *testing.T) {
 	}
 
 	code := runDecrypt(context.Background(), &config{Targets: []string{plainPath}}, []age.Identity{identity})
-	if code != 0 {
-		t.Errorf("runDecrypt(non-age single file) = %d, want 0 (skipped, not failed)", code)
+	if code != 1 {
+		t.Errorf("runDecrypt(non-.enc single file) = %d, want 1 (invalid target)", code)
 	}
 
 	got, err := os.ReadFile(plainPath)
@@ -235,38 +228,50 @@ func TestRunDecrypt_singleFileTarget_nonAge_exits_zero(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 	if string(got) != "PLAIN=value\n" {
-		t.Errorf("non-age single file was modified: %q", got)
+		t.Errorf("non-.enc target was modified: %q", got)
 	}
 }
 
-// TestRunDecrypt_singleFileTarget_wrongKey_exits_one pins the deploy-gate
-// failure signal for a single-file target that is age-encrypted but cannot be
-// decrypted (wrong key): runDecrypt must count it Failed and return exit 1.
-// Exercises runDecrypt's fileFailed arm (main.go ~104-105), previously
-// uncovered.
+// A named .enc source that cannot be decrypted (wrong key) must count Failed
+// and exit 1.
 func TestRunDecrypt_singleFileTarget_wrongKey_exits_one(t *testing.T) {
 	encryptID := newIdentity(t)
 	decryptID := newIdentity(t)
 	tmpDir := t.TempDir()
-	encPath := writeEncryptedEnv(t, tmpDir, "secret.env", []byte("S=v\n"), encryptID.Recipient())
+	src, _ := writeEncSource(t, tmpDir, "secret.env", []byte("S=v\n"), encryptID.Recipient())
 
-	code := runDecrypt(context.Background(), &config{Targets: []string{encPath}}, []age.Identity{decryptID})
+	code := runDecrypt(context.Background(), &config{Targets: []string{src}}, []age.Identity{decryptID})
 	if code != 1 {
 		t.Errorf("runDecrypt(wrong-key single file) = %d, want 1 (Failed > 0)", code)
+	}
+}
+
+// A named .enc source decrypts to its sibling and exits 0 — the scripted
+// single-file path.
+func TestRunDecrypt_singleFileTarget_success(t *testing.T) {
+	identity := newIdentity(t)
+	tmpDir := t.TempDir()
+	src, out := writeEncSource(t, tmpDir, "one.env", []byte("K=v\n"), identity.Recipient())
+
+	code := runDecrypt(context.Background(), &config{Targets: []string{src}}, []age.Identity{identity})
+	if code != 0 {
+		t.Fatalf("runDecrypt(single .enc file) = %d, want 0", code)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(got) != "K=v\n" {
+		t.Errorf("output = %q, want %q", got, "K=v\n")
 	}
 }
 
 // TestRunDecrypt_dirTarget_openRoot_failure_exits_one pins the deploy-gate
 // fidelity contract: when decryptAll returns a fatal error for a directory
 // target (the documented "repo root unreadable" stale-mount case, or any
-// os.OpenRoot failure), runDecrypt must propagate exit 1 (main.go:113-117).
-// The existing TestRunSubcommand_returns_one_on_invalid_root only exercises the
-// EARLIER os.Stat "target not accessible" branch (the path does not exist), not
-// this decryptAll-returns-error branch (the path exists and Stats as a dir, but
-// the subsequent os.OpenRoot/walk fails). A directory chmod'd to 0o000 is the
-// deterministic trigger: os.Stat succeeds (stat needs no permission on the
-// target itself, only on its parents) and reports IsDir, then decryptAll's
-// os.OpenRoot fails with EACCES.
+// os.OpenRoot failure), runDecrypt must propagate exit 1. A directory chmod'd
+// to 0o000 is the deterministic trigger: os.Stat succeeds and reports IsDir,
+// then decryptAll's os.OpenRoot fails with EACCES.
 func TestRunDecrypt_dirTarget_openRoot_failure_exits_one(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows: directory permissions unreliable")
@@ -281,7 +286,7 @@ func TestRunDecrypt_dirTarget_openRoot_failure_exits_one(t *testing.T) {
 	if err := os.Mkdir(sub, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	writeEncryptedEnv(t, sub, "a.env", []byte("K=v\n"), identity.Recipient())
+	writeEncSource(t, sub, "a.env", []byte("K=v\n"), identity.Recipient())
 	if err := os.Chmod(sub, 0o000); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
@@ -295,11 +300,9 @@ func TestRunDecrypt_dirTarget_openRoot_failure_exits_one(t *testing.T) {
 
 // TestRunDecrypt_walkError_blocks_deploy pins the fail-closed exit gate: a
 // subtree the walk cannot read (WalkErrors > 0) must block the deploy (exit 1)
-// even when every file the walk DID reach decrypted cleanly (Failed == 0). An
-// unread subtree leaves its age-encrypted files as ciphertext, the same
-// silent-no-op the fatal root-level walk error prevents, so it gets the same
-// exit-1 treatment one level down. Windows + root are skipped: chmod 0o000
-// cannot revoke read for either.
+// even when every source the walk DID reach decrypted cleanly (Failed == 0).
+// An unread subtree leaves its secrets undecrypted — the same silent-no-op
+// hazard the fatal root-level walk error prevents, one level down.
 func TestRunDecrypt_walkError_blocks_deploy(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows: permission-based walk errors unreliable")
@@ -311,16 +314,16 @@ func TestRunDecrypt_walkError_blocks_deploy(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
-	// A top-level .env that decrypts cleanly: Decrypted=1, Failed=0.
-	writeEncryptedEnv(t, tmpDir, "app.env", []byte("OK=1\n"), identity.Recipient())
+	// A top-level source that decrypts cleanly: Decrypted=1, Failed=0.
+	writeEncSource(t, tmpDir, "app.env", []byte("OK=1\n"), identity.Recipient())
 
-	// An unreadable subtree (WalkErrors>0) hiding an encrypted .env that is
-	// therefore never decrypted: the ciphertext-left-behind hazard.
+	// An unreadable subtree (WalkErrors>0) hiding a source that is therefore
+	// never decrypted: the missing-plaintext hazard.
 	noReadDir := filepath.Join(tmpDir, "locked")
 	if err := os.MkdirAll(noReadDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	writeEncryptedEnv(t, noReadDir, "hidden.env", []byte("SECRET=2\n"), identity.Recipient())
+	writeEncSource(t, noReadDir, "hidden.env", []byte("SECRET=2\n"), identity.Recipient())
 	if err := os.Chmod(noReadDir, 0o000); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
@@ -335,19 +338,15 @@ func TestRunDecrypt_walkError_blocks_deploy(t *testing.T) {
 // TestRunDecrypt_canceled_context_exits_one pins the wired cancellation on the
 // single-file path: a canceled context (SIGINT/SIGTERM) must make runDecrypt
 // exit non-zero rather than report the interrupted file as a skip and exit 0.
-// decryptFile reports the file fileSkipped on a canceled context, so the
-// runDecrypt post-loop guard is what turns that into the deploy-blocking exit.
-// The walk path's cancellation is exercised by
-// TestDecryptAll_respects_context_cancellation (decryptAll returns an error).
 func TestRunDecrypt_canceled_context_exits_one(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
-	path := writeEncryptedEnv(t, tmpDir, "one.env", []byte("K=v\n"), identity.Recipient())
+	src, _ := writeEncSource(t, tmpDir, "one.env", []byte("K=v\n"), identity.Recipient())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	code := runDecrypt(ctx, &config{Targets: []string{path}}, []age.Identity{identity})
+	code := runDecrypt(ctx, &config{Targets: []string{src}}, []age.Identity{identity})
 	if code != 1 {
 		t.Errorf("runDecrypt(canceled ctx, single-file target) = %d, want 1 (canceled pass must exit non-zero)", code)
 	}
@@ -356,15 +355,11 @@ func TestRunDecrypt_canceled_context_exits_one(t *testing.T) {
 // --- run (dispatch + key-load gate) ---
 
 // TestRun_decryptMode covers run()'s decrypt-mode dispatch and its
-// loadIdentities-failure gate — the wiring between main() and runDecrypt that
-// was previously uncovered (run 0%). run() installs its own signal context, so
-// only the non-blocking decrypt path is exercised here; the server path
-// (run -> runServer) blocks on that context by design and is covered via
-// runServer directly in TestRunServer_exits_zero_on_signal.
+// loadIdentities-failure gate. run() installs its own signal context, so only
+// the non-blocking decrypt path is exercised here; the server path blocks on
+// that context by design and is covered via runServer directly.
 func TestRun_decryptMode(t *testing.T) {
 	t.Run("unreadable key file blocks the deploy", func(t *testing.T) {
-		// A missing AGE_KEY_FILE must fail the deploy loudly (exit 1), never
-		// dispatch to runDecrypt against secrets it cannot decrypt.
 		cfg := &config{Mode: modeDecrypt, KeyFile: filepath.Join(t.TempDir(), "missing.key")}
 		if code := run(cfg); code != 1 {
 			t.Errorf("run(decrypt, missing key) = %d, want 1 (loadIdentities failure must exit non-zero)", code)
@@ -441,6 +436,7 @@ func TestWarnIfNoFilesSeen_warns_only_when_no_files_seen(t *testing.T) {
 		{name: "decrypted nonzero is silent", result: decryptResult{Decrypted: 1}, wantWarn: false},
 		{name: "failed nonzero is silent", result: decryptResult{Failed: 1}, wantWarn: false},
 		{name: "skipped nonzero is silent", result: decryptResult{Skipped: 1}, wantWarn: false},
+		{name: "walk errors nonzero is silent (they already explain the empty pass)", result: decryptResult{WalkErrors: 1}, wantWarn: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -473,5 +469,74 @@ func TestWarnIfNoFilesSeen_warns_only_when_no_files_seen(t *testing.T) {
 				t.Errorf("warn record missing the %q attr", tt.wantAttr)
 			}
 		})
+	}
+}
+
+// An explicit FIFO ending in .enc must be rejected without waiting for a
+// writer. This pins both the Lstat gate and the nonblocking no-follow open used
+// as defense in depth by decryptFile.
+func TestRunDecrypt_explicit_fifo_fails_without_blocking(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows: FIFOs are unavailable")
+	}
+	identity := newIdentity(t)
+	fifo := filepath.Join(t.TempDir(), "blocked.env"+encSuffix)
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+
+	done := make(chan int, 1)
+	go func() {
+		done <- runDecrypt(context.Background(), &config{Targets: []string{fifo}}, []age.Identity{identity})
+	}()
+	select {
+	case code := <-done:
+		if code != 1 {
+			t.Errorf("runDecrypt(FIFO) = %d, want 1", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runDecrypt(FIFO) blocked waiting for a writer")
+	}
+}
+
+// --ext applies to explicit files exactly as it does to walks: derive the
+// output name, then skip a source whose output suffix is out of scope.
+func TestRunDecrypt_explicit_file_respects_ext_filter(t *testing.T) {
+	identity := newIdentity(t)
+	dir := t.TempDir()
+	src, out := writeEncSource(t, dir, "config.yaml", []byte("key: value\n"), identity.Recipient())
+
+	code := runDecrypt(context.Background(), &config{
+		RepoRoot:   dir,
+		Targets:    []string{src},
+		Extensions: []string{".env"},
+	}, []age.Identity{identity})
+	if code != 0 {
+		t.Fatalf("runDecrypt(out-of-filter explicit file) = %d, want 0", code)
+	}
+	assertNoOutput(t, out)
+}
+
+func TestDecryptRoot_symlinked_directory_reports_nonregular_target(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows: symlinks require elevated privileges")
+	}
+	identity := newIdentity(t)
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	link := filepath.Join(base, "current")
+	if err := os.Symlink("real", link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, err := decryptRoot(t.Context(), link, []age.Identity{identity}, []string{".env"})
+	if err == nil {
+		t.Fatal("decryptRoot(symlinked directory) = nil error, want nonregular-target failure")
+	}
+	if got := err.Error(); !strings.Contains(got, "target must be a directory or a regular") {
+		t.Errorf("error = %q, want nonregular target diagnostic", got)
 	}
 }

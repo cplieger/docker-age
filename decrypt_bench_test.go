@@ -10,7 +10,9 @@ import (
 )
 
 // BenchmarkDecryptFile measures decryptFile performance with a small representative
-// armored-encrypted input to catch performance regressions.
+// armored-encrypted input to catch performance regressions. Under the v3
+// sibling-output model the source survives every pass, so the fixture is
+// written once and each iteration re-decrypts it (overwriting the sibling).
 func BenchmarkDecryptFile(b *testing.B) {
 	id, err := age.GenerateX25519Identity()
 	if err != nil {
@@ -24,7 +26,9 @@ func BenchmarkDecryptFile(b *testing.B) {
 	}
 
 	tmpDir := b.TempDir()
-	envPath := filepath.Join(tmpDir, "bench.env")
+	if err := os.WriteFile(filepath.Join(tmpDir, "bench.env"+encSuffix), encrypted, 0o644); err != nil {
+		b.Fatalf("write: %v", err)
+	}
 
 	rootDir, err := os.OpenRoot(tmpDir)
 	if err != nil {
@@ -36,11 +40,7 @@ func BenchmarkDecryptFile(b *testing.B) {
 	b.ReportAllocs()
 
 	for range b.N {
-		// Re-write the encrypted file each iteration since decryptFile overwrites it.
-		if err := os.WriteFile(envPath, encrypted, 0o644); err != nil {
-			b.Fatalf("write: %v", err)
-		}
-		status := decryptFile(context.Background(), rootDir, "bench.env", []age.Identity{id})
+		status := decryptFile(context.Background(), rootDir, "bench.env"+encSuffix, []age.Identity{id})
 		if status != fileDecrypted {
 			b.Fatalf("decryptFile = %d, want %d (fileDecrypted)", status, fileDecrypted)
 		}
