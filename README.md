@@ -112,7 +112,7 @@ docker run --rm \
 | Mount   | Description                                                                      |
 | ------- | -------------------------------------------------------------------------------- |
 | `/age`  | Directory containing your age identity (`keys.txt`, mode 0600). Mount read-only. |
-| `/repo` | Repository tree containing the `.enc` sources; plaintext siblings are generated in it. |
+| `/repo` | Repository tree of `.enc` sources; plaintext siblings are generated in it.       |
 
 ### Subcommands
 
