@@ -1,4 +1,4 @@
-module github.com/cplieger/age-decrypt/v3
+module github.com/cplieger/docker-age/v3
 
 go 1.26.5
 
