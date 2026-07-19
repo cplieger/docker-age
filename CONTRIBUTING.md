@@ -10,9 +10,10 @@ A single static Go binary (`age-decrypt`) shipped on
 `gcr.io/distroless/static:nonroot`. It walks a mounted tree, reads tracked
 `<name>.enc` age ciphertext, and atomically generates the canonical plaintext
 sibling `<name>` (for example `.env.enc` → `.env`). Ciphertext is never
-modified; generated plaintext is expected to be gitignored. The module path is
-`github.com/cplieger/age-decrypt/v3` even though the repo and image are named
-`docker-age` — the binary name, not the repo name, is the canonical identifier.
+modified; generated plaintext is expected to be gitignored. The module path
+`github.com/cplieger/docker-age/v3` matches the repository; the binary keeps
+its own name (`age-decrypt`), which is the canonical identifier in docs and
+usage examples.
 
 ## Layout
 
