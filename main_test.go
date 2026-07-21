@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
-	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -408,18 +407,16 @@ func TestLogDecryptResult_emits_all_counts(t *testing.T) {
 	if got := rec.CountExact("decryption complete"); got != 1 {
 		t.Fatalf("CountExact(decryption complete) = %d, want 1 (messages=%v)", got, rec.Messages())
 	}
-	r := rec.Records()[0]
-	if r.Level != slog.LevelInfo {
-		t.Errorf("level = %v, want INFO", r.Level)
+	if got := rec.CountLevel(slog.LevelInfo, "decryption complete"); got != 1 {
+		t.Errorf("CountLevel(INFO, decryption complete) = %d, want 1", got)
 	}
-	want := map[string]int64{"decrypted": 3, "failed": 2, "skipped": 5, "walk_errors": 1}
-	got := map[string]int64{}
-	r.Attrs(func(a slog.Attr) bool {
-		got[a.Key] = a.Value.Int64()
-		return true
-	})
-	if !maps.Equal(got, want) {
-		t.Errorf("attrs = %v, want %v", got, want)
+	for key, want := range map[string]string{
+		"decrypted": "3", "failed": "2", "skipped": "5", "walk_errors": "1",
+	} {
+		if !rec.HasAttr("decryption complete", key, want) {
+			got, ok := rec.AttrValue("decryption complete", key)
+			t.Errorf("summary %s = %q (found=%v), want %s", key, got, ok, want)
+		}
 	}
 }
 
@@ -429,10 +426,11 @@ func TestWarnIfNoFilesSeen_warns_only_when_no_files_seen(t *testing.T) {
 		result   decryptResult
 		targets  []string
 		wantAttr string // the attr key distinguishing the repo-root vs named-target warning
+		wantVal  string // its rendered value (the repo root, or the fmt-rendered target list)
 		wantWarn bool
 	}{
-		{name: "all zero, no targets, warns about repo root", result: decryptResult{}, targets: nil, wantWarn: true, wantAttr: "repo_root"},
-		{name: "all zero, with targets, warns about the named targets", result: decryptResult{}, targets: []string{"/foo/bar"}, wantWarn: true, wantAttr: "targets"},
+		{name: "all zero, no targets, warns about repo root", result: decryptResult{}, targets: nil, wantWarn: true, wantAttr: "repo_root", wantVal: "/repo/app"},
+		{name: "all zero, with targets, warns about the named targets", result: decryptResult{}, targets: []string{"/foo/bar"}, wantWarn: true, wantAttr: "targets", wantVal: "[/foo/bar]"},
 		{name: "decrypted nonzero is silent", result: decryptResult{Decrypted: 1}, wantWarn: false},
 		{name: "failed nonzero is silent", result: decryptResult{Failed: 1}, wantWarn: false},
 		{name: "skipped nonzero is silent", result: decryptResult{Skipped: 1}, wantWarn: false},
@@ -450,23 +448,15 @@ func TestWarnIfNoFilesSeen_warns_only_when_no_files_seen(t *testing.T) {
 			if !tt.wantWarn {
 				return
 			}
-			records := rec.Records()
-			if len(records) != 1 {
-				t.Fatalf("captured %d records, want exactly one warning", len(records))
+			if rec.Len() != 1 {
+				t.Fatalf("captured %d records, want exactly one warning (messages=%v)", rec.Len(), rec.Messages())
 			}
-			r := records[0]
-			if r.Level != slog.LevelWarn {
-				t.Errorf("level = %v, want WARN", r.Level)
+			if got := rec.CountLevel(slog.LevelWarn, "no matching files found"); got != 1 {
+				t.Errorf("CountLevel(WARN, no matching files found) = %d, want 1", got)
 			}
-			hasAttr := false
-			r.Attrs(func(a slog.Attr) bool {
-				if a.Key == tt.wantAttr {
-					hasAttr = true
-				}
-				return true
-			})
-			if !hasAttr {
-				t.Errorf("warn record missing the %q attr", tt.wantAttr)
+			if !rec.HasAttr("no matching files found", tt.wantAttr, tt.wantVal) {
+				got, ok := rec.AttrValue("no matching files found", tt.wantAttr)
+				t.Errorf("warn record %s = %q (found=%v), want %q", tt.wantAttr, got, ok, tt.wantVal)
 			}
 		})
 	}
