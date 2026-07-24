@@ -19,19 +19,19 @@ usage examples.
 
 Flat `package main`, one concern per file:
 
-- `main.go` — entry point and the two run modes (`runDecrypt`,
+- `main.go`: entry point and the two run modes (`runDecrypt`,
   `runServer`), plus the file-based health marker/probe wiring via
   `github.com/cplieger/health`. The `health` probe is intercepted here
   _before_ `parseConfig` runs, because the probe must work without
   `AGE_KEY_FILE` set.
-- `config.go` — env-var parsing (`AGE_KEY_FILE`, `AGE_REPO_ROOT`) and mode
+- `config.go`: env-var parsing (`AGE_KEY_FILE`, `AGE_REPO_ROOT`) and mode
   selection from `os.Args[1]` (`decrypt` → decrypt mode with `--ext`/path/pipe parsing, `health` → probe,
   empty → server).
-- `identity.go` — `loadIdentities` loads **all** age identities from the key
+- `identity.go`: `loadIdentities` loads **all** age identities from the key
   file, returning `[]age.Identity` (the interface, not a concrete key type) so
   future key kinds don't churn callers and multiple identities enable key
   rotation. Caps the key file at 1 MB.
-- `decrypt.go` — the core: candidate/name validation, safe source opens,
+- `decrypt.go`: the core. Candidate/name validation, safe source opens,
   decrypt limits, random exclusive temp publication, strict orphan cleanup,
   and the fail-closed tree walk.
 
@@ -75,19 +75,19 @@ before touching `decrypt.go`.
 - **Server mode idles; it performs no startup decrypt.** `runServer`
   sets the health marker healthy (`marker.Set(true)`) and blocks on the
   signal context until SIGINT/SIGTERM, then cleans up on shutdown.
-  There is no startup decrypt and no `startupHealthy` gate --
+  There is no startup decrypt and no `startupHealthy` gate;
   the container's only job is to stay alive as a long-lived
   `docker exec age /age-decrypt decrypt --ext .env` target for the deploy.
   All decrypt work, and its loud deploy-blocking non-zero exit on failure,
   happens in the exec'd `decrypt` subcommand, never at server startup.
   Don't add a startup decrypt to `runServer` or make it exit non-zero on a
-  decrypt outcome -- that would crash-loop it under `restart: unless-stopped`
+  decrypt outcome; that would crash-loop it under `restart: unless-stopped`
   and remove the exec target precisely when a deploy needs it.
 - **`loadIdentities` returns every identity, and `decryptFile` tries them
   all.** The key file is "one identity per line"; `loadIdentities` returns the
   full `[]age.Identity` and `decryptFile` forwards it to the variadic
   `age.Decrypt`. Returning only the first, or threading a single
-  `age.Identity` through, silently breaks key rotation — a file encrypted to
+  `age.Identity` through, silently breaks key rotation: a file encrypted to
   the second key would fail. Keep the slice end-to-end.
 - **Decryption is repeatable, not in-place-idempotent.** Every pass reads the
   unchanged `.enc` source and atomically refreshes the plaintext sibling. A
@@ -139,7 +139,7 @@ golangci-lint fmt
 
 `golangci-lint run` flags unformatted files as issues, so `run` alone
 catches formatting drift; `fmt` applies the fixes. Test files have several
-linters relaxed via the `_test\.go` exclusion rules — don't be surprised
+linters relaxed via the `_test\.go` exclusion rules, so don't be surprised
 when production-only checks (`gosec`, `gocyclo`, etc.) don't fire there.
 
 Build the image to verify the Dockerfile (`# check=error=true` makes
@@ -156,12 +156,12 @@ docker build -t age-decrypt .
   secret outputs from the index or every decrypt will dirty the checkout.
 - `# nosec G304` in `identity.go` is deliberate: the key path is
   operator-supplied, not untrusted input. Keep the explanation comment if
-  you move the line — `nolintlint` requires it.
+  you move the line; `nolintlint` requires it.
 - Mutation testing config lives in `.gremlins.yaml` and excludes
   `main.go` (lifecycle/signal handling plus the health-marker filesystem
   ops that mutate without signal). That's expected, not a coverage gap to
   fix.
-- CI (`.github/workflows/ci.yaml`) is synced from `cplieger/ci` — don't
+- CI (`.github/workflows/ci.yaml`) is synced from `cplieger/ci`; don't
   edit it locally; changes land upstream.
 - Logs are UTC: the `slogx` library (its `UTCTime` `ReplaceAttr`) forces every record's
   timestamp to UTC, so the container needs no `TZ` and the binary embeds

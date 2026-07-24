@@ -1,4 +1,4 @@
-# Security assurance case — docker-age
+# Security assurance case: docker-age
 
 This extends the shared
 [default assurance case](https://github.com/cplieger/.github/blob/main/assurance-case.md)
@@ -8,7 +8,7 @@ with the threat model specific to `docker-age`. Read that first.
 
 A distroless Go tool (`age-decrypt`) that decrypts age-encrypted `.enc`
 sources to their **plaintext siblings** (`apps/x/.env.enc` → `apps/x/.env`) at
-deploy time — the secrets-decryption step of the deploy pipeline. It runs with
+deploy time, the secrets-decryption step of the deploy pipeline. It runs with
 access to the age identity (private key) and writes plaintext secrets, so
 path-safety, source immutability, and bounded behaviour are the core concerns.
 
@@ -42,7 +42,7 @@ deploy that cannot prove its config path is regular plaintext.
 
 ## Cryptography
 
-Decryption uses `filippo.io/age` (the reference age implementation) — no
+Decryption uses `filippo.io/age` (the reference age implementation); no
 home-grown crypto. The age identity is provided at runtime and never logged.
 
 ## Residual risks

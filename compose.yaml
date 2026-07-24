@@ -1,5 +1,4 @@
 # Example compose for docker-age. See the README for all configuration options and hardening.
-# Example compose for docker-age. See the README for all configuration options and hardening.
 # Trigger (.env.enc -> .env): docker exec age /age-decrypt decrypt --ext .env
 services:
   age:
