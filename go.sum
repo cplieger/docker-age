@@ -10,8 +10,8 @@ github.com/cplieger/health v1.4.0 h1:MnLfSZNRnq7wYSMVi1s8Ox0kowk5iPzmqVKQ5JHHsoM
 github.com/cplieger/health v1.4.0/go.mod h1:15Lm3XhPMU3nCEDfIH2hVAz6TXH06Wwiz9tgBi71vEE=
 github.com/cplieger/pathinside v1.0.0 h1:w58q7tntX7VcVnDmF4r/FNKnvl1yLq4tDac845XTdBU=
 github.com/cplieger/pathinside v1.0.0/go.mod h1:yHMRs1HFsqkCGWYUzRCD+DoKWCIZE8Uj0wTKkFTFUsg=
-github.com/cplieger/slogx v1.5.0 h1:4K5E9IG0nkYopJqv+BV/YsaMwPSCzyUvdPex24DeKds=
-github.com/cplieger/slogx v1.5.0/go.mod h1:15KA2NVx725imQe/PYXUmd3oM2oMpYpqwU+hdHtz7Fc=
+github.com/cplieger/slogx v1.6.0 h1:ctcE3EqHz0VxmHYGWwcAGpexIWtZrB427UoDa3umpGk=
+github.com/cplieger/slogx v1.6.0/go.mod h1:15KA2NVx725imQe/PYXUmd3oM2oMpYpqwU+hdHtz7Fc=
 golang.org/x/crypto v0.54.0 h1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw=
 golang.org/x/crypto v0.54.0/go.mod h1:KWL8ny2AZdGR2cWmzeHrp2azQPGogOv+HeQaVEXC2dk=
 golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
