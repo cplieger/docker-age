@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -291,5 +294,194 @@ func TestSweepOrphanTmpFile_returns_true_when_stale_file_removed(t *testing.T) {
 	}
 	if _, statErr := os.Stat(p); !errors.Is(statErr, fs.ErrNotExist) {
 		t.Errorf("stale tmp still present after sweep, stat err = %v", statErr)
+	}
+}
+
+// newPlaintextTemp creates a real v3 plaintext temp holding cleartext and
+// returns its relative name, the owning descriptor, and the fstat that
+// identifies the inode. It exists so the three mode/cleanup tests below drive
+// the actual publish primitives rather than a synthesized os.FileInfo.
+func newPlaintextTemp(t *testing.T, rootDir *os.Root, outRel string, cleartext []byte) (string, *os.File, os.FileInfo) {
+	t.Helper()
+	tmpName, temp, err := createTempFile(rootDir, outRel)
+	if err != nil {
+		t.Fatalf("createTempFile: %v", err)
+	}
+	t.Cleanup(func() { _ = rootDir.Remove(tmpName) })
+	if writeErr := writeAll(temp, cleartext); writeErr != nil {
+		t.Fatalf("write cleartext: %v", writeErr)
+	}
+	info, err := temp.Stat()
+	if err != nil {
+		t.Fatalf("stat owned temp: %v", err)
+	}
+	return tmpName, temp, info
+}
+
+// TestValidateTempFile_refuses_a_mode_the_filesystem_widened pins that the
+// publish path VERIFIES the stored mode rather than trusting the one it asked
+// for. temp.Chmod(0600) is fchmod(2), and a mode argument is a request, not a
+// result: on a filesystem carrying an inheritable group-write ACL (measured on
+// a ZFS nfs4acl dataset) the kernel stores 0660 and fchmod still reports
+// success. validateTempFile's exact-0600 comparison is the only thing standing
+// between that and renaming group-readable decrypted secrets into place while
+// logging "decrypted" — every other check here (regular, single-link) passes on
+// a 0660 file.
+//
+// The drift is driven for real, by widening the inode through its own
+// descriptor, and then witnessed by re-stat'ing it: a filesystem that declined
+// to store 0660 makes this test INVALID rather than passing vacuously, since
+// validateTempFile would be refusing a mode nothing had produced.
+//
+// given a plaintext temp whose stored mode is really 0660
+// when validateTempFile inspects the fstat of that descriptor
+// then it refuses, and names the mode it actually found.
+func TestValidateTempFile_refuses_a_mode_the_filesystem_widened(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows: unix permission bits unreliable")
+	}
+	tmpDir := t.TempDir()
+	rootDir, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = rootDir.Close() }()
+
+	_, temp, created := newPlaintextTemp(t, rootDir, "app.env", []byte("SECRET=plaintext\n"))
+	defer func() { _ = temp.Close() }()
+	if perm := created.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("temp created with mode %04o, want 0600 before the widening", perm)
+	}
+
+	// Stand in for the filesystem storing more than fchmod asked for.
+	if chmodErr := temp.Chmod(0o660); chmodErr != nil {
+		t.Fatalf("widen temp mode: %v", chmodErr)
+	}
+	stored, err := temp.Stat()
+	if err != nil {
+		t.Fatalf("re-stat widened temp: %v", err)
+	}
+	if perm := stored.Mode().Perm(); perm != 0o660 {
+		t.Skipf("INVALID: filesystem stored %04o, not 0660 — mode drift cannot be driven here, so this test would assert nothing", perm)
+	}
+
+	validateErr := validateTempFile(stored)
+	if validateErr == nil {
+		t.Fatalf("validateTempFile(stored mode 0660) = nil, want a refusal: publishing it leaves decrypted secrets group-readable")
+	}
+	if !strings.Contains(validateErr.Error(), "0660") {
+		t.Errorf("validateTempFile error = %q, want it to name the stored mode 0660", validateErr)
+	}
+}
+
+// TestRevalidateTempBeforeRename_refuses_a_widened_mode pins the same
+// verification at the second place the publish path performs it: after the temp
+// is closed and immediately before the rename. The check must read the mode
+// CURRENTLY on the inode, not the one captured in `expected` when the
+// descriptor was still open — a mode widened in that window (an ACL applied to
+// the tree mid-pass, a neighbour's chmod) would otherwise be published as a
+// group-readable plaintext sibling. The inode is unchanged, so os.SameFile
+// still matches and the mode comparison is the only thing that can refuse.
+//
+// given an owned temp whose mode was widened to 0660 after its owning fstat
+// when revalidateTempBeforeRename re-checks it
+// then it refuses as unsafe and names the mode it found.
+func TestRevalidateTempBeforeRename_refuses_a_widened_mode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows: unix permission bits unreliable")
+	}
+	tmpDir := t.TempDir()
+	rootDir, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = rootDir.Close() }()
+
+	tmpName, temp, expected := newPlaintextTemp(t, rootDir, "app.env", []byte("SECRET=plaintext\n"))
+	if closeErr := temp.Close(); closeErr != nil {
+		t.Fatalf("close owned temp: %v", closeErr)
+	}
+	if healthy := revalidateTempBeforeRename(rootDir, tmpName, expected); healthy != nil {
+		t.Fatalf("revalidateTempBeforeRename(0600 temp) = %v, want nil before the widening", healthy)
+	}
+
+	if chmodErr := os.Chmod(filepath.Join(tmpDir, tmpName), 0o660); chmodErr != nil {
+		t.Fatalf("widen temp mode: %v", chmodErr)
+	}
+	widened, err := os.Lstat(filepath.Join(tmpDir, tmpName))
+	if err != nil {
+		t.Fatalf("lstat widened temp: %v", err)
+	}
+	if perm := widened.Mode().Perm(); perm != 0o660 {
+		t.Skipf("INVALID: filesystem stored %04o, not 0660 — mode drift cannot be driven here, so this test would assert nothing", perm)
+	}
+
+	revalidateErr := revalidateTempBeforeRename(rootDir, tmpName, expected)
+	if revalidateErr == nil {
+		t.Fatalf("revalidateTempBeforeRename(widened to 0660) = nil, want a refusal before the rename publishes group-readable plaintext")
+	}
+	if !strings.Contains(revalidateErr.Error(), "0660") {
+		t.Errorf("revalidateTempBeforeRename error = %q, want it to name the stored mode 0660", revalidateErr)
+	}
+}
+
+// TestWipeOwnedTempFile_zeroes_the_cleartext_it_unlinks pins what happens to
+// the decrypted bytes when any pre-rename check refuses — an unsafe mode, a
+// failed sync, a lost inode. writeDecryptedSibling's deferred cleanup runs
+// wipeOwnedTempFile on every non-committed exit, and unlinking alone is not
+// enough: the name is gone but the blocks survive for anything still holding
+// the inode. The wipe must truncate as well as unlink.
+//
+// Absence of the name is already covered end-to-end by the rename-failure test
+// above; what is untested is the zeroing, which needs a second descriptor
+// opened on the same inode BEFORE the wipe — that fd is how the test reads the
+// inode after its directory entry is gone. It is asserted to see the cleartext
+// first, so an empty read afterwards cannot come from a fixture that never
+// wrote anything.
+//
+// given an owned plaintext temp and a witness descriptor on the same inode
+// when wipeOwnedTempFile runs
+// then the name is gone and the inode the witness holds reads back empty.
+func TestWipeOwnedTempFile_zeroes_the_cleartext_it_unlinks(t *testing.T) {
+	tmpDir := t.TempDir()
+	rootDir, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = rootDir.Close() }()
+
+	cleartext := []byte("SECRET=plaintext\n")
+	tmpName, temp, expected := newPlaintextTemp(t, rootDir, "app.env", cleartext)
+	tmpPath := filepath.Join(tmpDir, tmpName)
+
+	witness, err := os.Open(tmpPath)
+	if err != nil {
+		t.Fatalf("open witness descriptor: %v", err)
+	}
+	defer func() { _ = witness.Close() }()
+	before, err := io.ReadAll(witness)
+	if err != nil {
+		t.Fatalf("read witness before wipe: %v", err)
+	}
+	if !bytes.Equal(before, cleartext) {
+		t.Fatalf("INVALID: witness read %q before the wipe, want the cleartext %q — an empty read after the wipe would prove nothing", before, cleartext)
+	}
+
+	if wipeErr := wipeOwnedTempFile(rootDir, tmpName, temp, expected); wipeErr != nil {
+		t.Fatalf("wipeOwnedTempFile: %v", wipeErr)
+	}
+
+	if _, statErr := os.Lstat(tmpPath); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("temp name still present after wipe, lstat err = %v", statErr)
+	}
+	if _, seekErr := witness.Seek(0, io.SeekStart); seekErr != nil {
+		t.Fatalf("rewind witness: %v", seekErr)
+	}
+	after, err := io.ReadAll(witness)
+	if err != nil {
+		t.Fatalf("read witness after wipe: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("wiped inode still holds %d bytes (%q), want it zeroed: an unlinked-but-intact inode keeps decrypted secrets readable to any open descriptor", len(after), after)
 	}
 }
