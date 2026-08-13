@@ -4,12 +4,12 @@ go 1.26.6
 
 require (
 	filippo.io/age v1.3.1
-	github.com/cplieger/health v1.5.0
-	github.com/cplieger/slogx v1.6.0
+	github.com/cplieger/health v1.5.1
+	github.com/cplieger/slogx v1.6.1
 	pgregory.net/rapid v1.3.0
 )
 
-require github.com/cplieger/pathinside v1.0.0 // indirect
+require github.com/cplieger/pathinside v1.0.1 // indirect
 
 require (
 	filippo.io/hpke v0.4.0 // indirect
