@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,7 +39,7 @@ func BenchmarkDecryptFile(b *testing.B) {
 	b.ReportAllocs()
 
 	for range b.N {
-		status := decryptFile(context.Background(), rootDir, "bench.env"+encSuffix, []age.Identity{id})
+		status := decryptFile(b.Context(), rootDir, "bench.env"+encSuffix, []age.Identity{id})
 		if status != fileDecrypted {
 			b.Fatalf("decryptFile = %d, want %d (fileDecrypted)", status, fileDecrypted)
 		}

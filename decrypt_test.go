@@ -102,7 +102,7 @@ func TestDecryptFile_plaintext_enc_source_fails(t *testing.T) {
 	}
 	defer func() { _ = rootDir.Close() }()
 
-	got := decryptFile(context.Background(), rootDir, "plain.env"+encSuffix, []age.Identity{identity})
+	got := decryptFile(t.Context(), rootDir, "plain.env"+encSuffix, []age.Identity{identity})
 	if got != fileFailed {
 		t.Errorf("decryptFile(plaintext .enc) = %d, want %d (fileFailed)", got, fileFailed)
 	}
@@ -314,7 +314,7 @@ func TestDecryptFile_status(t *testing.T) {
 			}
 			defer func() { _ = rootDir.Close() }()
 
-			got := decryptFile(context.Background(), rootDir, tc.file, []age.Identity{tc.id})
+			got := decryptFile(t.Context(), rootDir, tc.file, []age.Identity{tc.id})
 			if got != tc.want {
 				t.Errorf("decryptFile(%s) = %d, want %d", tc.name, got, tc.want)
 			}
@@ -445,7 +445,7 @@ func TestDecryptFile_rejects_corrupted_body_leaves_source_and_no_output(t *testi
 	}
 	defer func() { _ = rootDir.Close() }()
 
-	got := decryptFile(context.Background(), rootDir, "tampered.env"+encSuffix, []age.Identity{id})
+	got := decryptFile(t.Context(), rootDir, "tampered.env"+encSuffix, []age.Identity{id})
 	if got != fileFailed {
 		t.Errorf("decryptFile(corrupt body) = %d, want %d (fileFailed)", got, fileFailed)
 	}
@@ -503,7 +503,7 @@ func TestDecryptFile_directory_source_returns_failed(t *testing.T) {
 	}
 	defer func() { _ = rootDir.Close() }()
 
-	got := decryptFile(context.Background(), rootDir, "adir.env"+encSuffix, []age.Identity{identity})
+	got := decryptFile(t.Context(), rootDir, "adir.env"+encSuffix, []age.Identity{identity})
 	if got != fileFailed {
 		t.Errorf("decryptFile(directory source) = %d, want %d (fileFailed: header read must fail closed)", got, fileFailed)
 	}

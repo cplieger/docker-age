@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -47,7 +46,7 @@ func FuzzDecryptFile(f *testing.F) {
 		isAge := bytes.HasPrefix(data, []byte(armoredHeader)) ||
 			bytes.HasPrefix(data, []byte(ageHeader))
 
-		status := decryptFile(context.Background(), rootDir, srcRel, []age.Identity{id})
+		status := decryptFile(t.Context(), rootDir, srcRel, []age.Identity{id})
 
 		// Invariant 1: result is always one of the three defined statuses.
 		switch status {
