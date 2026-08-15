@@ -37,7 +37,7 @@ func TestWriteDecryptedSibling_rename_failure_leaves_no_plaintext_debris(t *test
 	}
 	defer func() { _ = rootDir.Close() }()
 
-	got := writeDecryptedSibling(context.Background(), rootDir, out+encSuffix, out, []byte("SECRET=plaintext\n"))
+	got := writeDecryptedSibling(t.Context(), rootDir, out+encSuffix, out, []byte("SECRET=plaintext\n"))
 	if got != fileFailed {
 		t.Errorf("writeDecryptedSibling(rename onto dir) = %d, want %d (fileFailed)", got, fileFailed)
 	}
@@ -105,7 +105,7 @@ func TestWriteDecryptedSibling_success_writes_0600_output(t *testing.T) {
 	}
 	defer func() { _ = rootDir.Close() }()
 
-	got := writeDecryptedSibling(context.Background(), rootDir, "app.env"+encSuffix, "app.env", []byte("SECRET=plaintext\n"))
+	got := writeDecryptedSibling(t.Context(), rootDir, "app.env"+encSuffix, "app.env", []byte("SECRET=plaintext\n"))
 	if got != fileDecrypted {
 		t.Fatalf("writeDecryptedSibling = %d, want %d (fileDecrypted)", got, fileDecrypted)
 	}

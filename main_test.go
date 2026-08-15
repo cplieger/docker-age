@@ -42,7 +42,7 @@ func TestDecryptSingleFile_writes_sibling(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	status := decryptSingleFile(context.Background(), srcPath, []age.Identity{identity})
+	status := decryptSingleFile(t.Context(), srcPath, []age.Identity{identity})
 	if status != fileDecrypted {
 		t.Fatalf("decryptSingleFile = %v, want fileDecrypted", status)
 	}
@@ -68,7 +68,7 @@ func TestDecryptSingleFile_plaintext_enc_fails(t *testing.T) {
 	}
 
 	identity := newIdentity(t)
-	status := decryptSingleFile(context.Background(), srcPath, []age.Identity{identity})
+	status := decryptSingleFile(t.Context(), srcPath, []age.Identity{identity})
 	if status != fileFailed {
 		t.Errorf("decryptSingleFile(plaintext .enc) = %v, want fileFailed", status)
 	}
@@ -88,7 +88,7 @@ func TestDecryptSingleFile_parent_not_a_directory_returns_failed(t *testing.T) {
 	}
 	bogus := filepath.Join(notDir, "child.env"+encSuffix)
 
-	got := decryptSingleFile(context.Background(), bogus, []age.Identity{identity})
+	got := decryptSingleFile(t.Context(), bogus, []age.Identity{identity})
 	if got != fileFailed {
 		t.Errorf("decryptSingleFile(parent not a directory) = %d, want %d (fileFailed)", got, fileFailed)
 	}
@@ -101,7 +101,7 @@ func TestRunDecrypt_bareDecryptErrors(t *testing.T) {
 
 	// No targets, no extensions = must error (not silently decrypt everything)
 	cfg := &config{RepoRoot: t.TempDir()}
-	code := runDecrypt(context.Background(), cfg, []age.Identity{identity})
+	code := runDecrypt(t.Context(), cfg, []age.Identity{identity})
 	if code != 1 {
 		t.Errorf("runDecrypt(no targets, no --ext) = %d, want 1 (error)", code)
 	}
@@ -119,7 +119,7 @@ func TestRunDecrypt_withExtWalksTree(t *testing.T) {
 	}
 
 	cfg := &config{RepoRoot: tmpDir, Extensions: []string{".env"}}
-	code := runDecrypt(context.Background(), cfg, []age.Identity{identity})
+	code := runDecrypt(t.Context(), cfg, []age.Identity{identity})
 	if code != 0 {
 		t.Fatalf("runDecrypt = %d, want 0", code)
 	}
@@ -144,7 +144,7 @@ func TestRunDecrypt_withTargetNoExtDecryptsAll(t *testing.T) {
 
 	// Explicit dir target: all .enc sources are candidates (no --ext needed).
 	cfg := &config{RepoRoot: t.TempDir(), Targets: []string{tmpDir}}
-	code := runDecrypt(context.Background(), cfg, []age.Identity{identity})
+	code := runDecrypt(t.Context(), cfg, []age.Identity{identity})
 	if code != 0 {
 		t.Fatalf("runDecrypt = %d, want 0", code)
 	}
@@ -161,7 +161,7 @@ func TestRunSubcommand_returns_zero_on_success(t *testing.T) {
 
 	writeEncSource(t, tmpDir, "app.env", []byte("SUB_KEY=value\n"), identity.Recipient())
 
-	code := runDecrypt(context.Background(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{identity})
+	code := runDecrypt(t.Context(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{identity})
 	if code != 0 {
 		t.Errorf("runDecrypt(valid) = %d, want 0", code)
 	}
@@ -175,7 +175,7 @@ func TestRunSubcommand_returns_one_on_decrypt_failure(t *testing.T) {
 	// Encrypt with one key, decrypt with another — produces Failed > 0.
 	writeEncSource(t, tmpDir, "secret.env", []byte("S=v\n"), encryptID.Recipient())
 
-	code := runDecrypt(context.Background(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{decryptID})
+	code := runDecrypt(t.Context(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{decryptID})
 	if code != 1 {
 		t.Errorf("runDecrypt(wrong key) = %d, want 1 (Failed > 0)", code)
 	}
@@ -185,7 +185,7 @@ func TestRunSubcommand_returns_one_on_invalid_root(t *testing.T) {
 	identity := newIdentity(t)
 	bogusRoot := filepath.Join(t.TempDir(), "does-not-exist")
 
-	code := runDecrypt(context.Background(), &config{RepoRoot: bogusRoot, Extensions: []string{".env"}}, []age.Identity{identity})
+	code := runDecrypt(t.Context(), &config{RepoRoot: bogusRoot, Extensions: []string{".env"}}, []age.Identity{identity})
 	if code != 1 {
 		t.Errorf("runDecrypt(invalid root) = %d, want 1", code)
 	}
@@ -200,7 +200,7 @@ func TestRunDecrypt_stray_ciphertext_blocks_deploy(t *testing.T) {
 	writeEncSource(t, tmpDir, "app.env", []byte("OK=1\n"), identity.Recipient())
 	writeEncryptedEnv(t, tmpDir, "legacy.env", []byte("UNMIGRATED=1\n"), identity.Recipient())
 
-	code := runDecrypt(context.Background(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{identity})
+	code := runDecrypt(t.Context(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{identity})
 	if code != 1 {
 		t.Errorf("runDecrypt(stray ciphertext at legacy.env) = %d, want 1 (deploy-blocking)", code)
 	}
@@ -217,7 +217,7 @@ func TestRunDecrypt_singleFileTarget_nonEnc_exits_one(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	code := runDecrypt(context.Background(), &config{Targets: []string{plainPath}}, []age.Identity{identity})
+	code := runDecrypt(t.Context(), &config{Targets: []string{plainPath}}, []age.Identity{identity})
 	if code != 1 {
 		t.Errorf("runDecrypt(non-.enc single file) = %d, want 1 (invalid target)", code)
 	}
@@ -239,7 +239,7 @@ func TestRunDecrypt_singleFileTarget_wrongKey_exits_one(t *testing.T) {
 	tmpDir := t.TempDir()
 	src, _ := writeEncSource(t, tmpDir, "secret.env", []byte("S=v\n"), encryptID.Recipient())
 
-	code := runDecrypt(context.Background(), &config{Targets: []string{src}}, []age.Identity{decryptID})
+	code := runDecrypt(t.Context(), &config{Targets: []string{src}}, []age.Identity{decryptID})
 	if code != 1 {
 		t.Errorf("runDecrypt(wrong-key single file) = %d, want 1 (Failed > 0)", code)
 	}
@@ -252,7 +252,7 @@ func TestRunDecrypt_singleFileTarget_success(t *testing.T) {
 	tmpDir := t.TempDir()
 	src, out := writeEncSource(t, tmpDir, "one.env", []byte("K=v\n"), identity.Recipient())
 
-	code := runDecrypt(context.Background(), &config{Targets: []string{src}}, []age.Identity{identity})
+	code := runDecrypt(t.Context(), &config{Targets: []string{src}}, []age.Identity{identity})
 	if code != 0 {
 		t.Fatalf("runDecrypt(single .enc file) = %d, want 0", code)
 	}
@@ -291,7 +291,7 @@ func TestRunDecrypt_dirTarget_openRoot_failure_exits_one(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
 
-	code := runDecrypt(context.Background(), &config{Targets: []string{sub}, Extensions: []string{".env"}}, []age.Identity{identity})
+	code := runDecrypt(t.Context(), &config{Targets: []string{sub}, Extensions: []string{".env"}}, []age.Identity{identity})
 	if code != 1 {
 		t.Errorf("runDecrypt(unreadable dir target) = %d, want 1 (decryptAll open-root failure must block the deploy)", code)
 	}
@@ -328,7 +328,7 @@ func TestRunDecrypt_walkError_blocks_deploy(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(noReadDir, 0o755) })
 
-	code := runDecrypt(context.Background(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{identity})
+	code := runDecrypt(t.Context(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{identity})
 	if code != 1 {
 		t.Errorf("runDecrypt(unreadable subtree, Failed=0 WalkErrors>0) = %d, want 1 (walk error must block the deploy)", code)
 	}
@@ -477,7 +477,7 @@ func TestRunDecrypt_explicit_fifo_fails_without_blocking(t *testing.T) {
 
 	done := make(chan int, 1)
 	go func() {
-		done <- runDecrypt(context.Background(), &config{Targets: []string{fifo}}, []age.Identity{identity})
+		done <- runDecrypt(t.Context(), &config{Targets: []string{fifo}}, []age.Identity{identity})
 	}()
 	select {
 	case code := <-done:
@@ -496,7 +496,7 @@ func TestRunDecrypt_explicit_file_respects_ext_filter(t *testing.T) {
 	dir := t.TempDir()
 	src, out := writeEncSource(t, dir, "config.yaml", []byte("key: value\n"), identity.Recipient())
 
-	code := runDecrypt(context.Background(), &config{
+	code := runDecrypt(t.Context(), &config{
 		RepoRoot:   dir,
 		Targets:    []string{src},
 		Extensions: []string{".env"},

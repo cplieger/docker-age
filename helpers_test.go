@@ -128,7 +128,8 @@ func decryptAllCount(root string, identity age.Identity) (int, error) {
 
 // decryptFileBool is a test-local adapter that preserves the pre-refactor
 // bool return for existing tests. New tests that need to distinguish
-// fileSkipped from fileFailed should call decryptFile directly.
+// fileSkipped from fileFailed should call decryptFile directly. Uses a
+// background context (not t.Context()): no *testing.T is in scope here.
 func decryptFileBool(rootDir *os.Root, rel string, identity age.Identity) bool {
 	return decryptFile(context.Background(), rootDir, rel, []age.Identity{identity}) == fileDecrypted
 }

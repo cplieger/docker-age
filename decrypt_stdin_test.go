@@ -72,7 +72,7 @@ func TestDecryptStream(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
-			code := decryptStream(context.Background(), bytes.NewReader(tc.input), &out, []age.Identity{id})
+			code := decryptStream(t.Context(), bytes.NewReader(tc.input), &out, []age.Identity{id})
 			if code != tc.wantCode {
 				t.Errorf("decryptStream code = %d, want %d", code, tc.wantCode)
 			}
@@ -106,7 +106,7 @@ func FuzzDecryptStream(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		var out bytes.Buffer
-		code := decryptStream(context.Background(), bytes.NewReader(data), &out, []age.Identity{id})
+		code := decryptStream(t.Context(), bytes.NewReader(data), &out, []age.Identity{id})
 		if code != 0 && code != 1 {
 			t.Fatalf("decryptStream code = %d, want 0 or 1", code)
 		}
@@ -144,7 +144,7 @@ func TestDecryptStream_read_error(t *testing.T) {
 	id := newIdentity(t)
 
 	var out bytes.Buffer
-	code := decryptStream(context.Background(), errReader{}, &out, []age.Identity{id})
+	code := decryptStream(t.Context(), errReader{}, &out, []age.Identity{id})
 
 	if code != 1 {
 		t.Errorf("decryptStream(failing reader) = %d, want 1", code)
@@ -166,7 +166,7 @@ func TestDecryptStream_write_error(t *testing.T) {
 		t.Fatalf("encrypt: %v", err)
 	}
 
-	code := decryptStream(context.Background(), bytes.NewReader(ciphertext), errWriter{}, []age.Identity{id})
+	code := decryptStream(t.Context(), bytes.NewReader(ciphertext), errWriter{}, []age.Identity{id})
 
 	if code != 1 {
 		t.Errorf("decryptStream(valid ciphertext, failing writer) = %d, want 1", code)
@@ -189,7 +189,7 @@ func TestDecryptStream_rejects_corrupted_body(t *testing.T) {
 	corrupt := full[:len(full)-1]
 
 	var out bytes.Buffer
-	code := decryptStream(context.Background(), bytes.NewReader(corrupt), &out, []age.Identity{id})
+	code := decryptStream(t.Context(), bytes.NewReader(corrupt), &out, []age.Identity{id})
 
 	if code != 1 {
 		t.Errorf("decryptStream(corrupt body) = %d, want 1", code)
@@ -243,7 +243,7 @@ func TestDecryptStream_cancellation_writes_nothing(t *testing.T) {
 	})
 
 	t.Run("canceled after input read", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		reader := &cancelAtEOFReader{reader: bytes.NewReader(ciphertext), cancel: cancel}
 		var out bytes.Buffer
 		if code := decryptStream(ctx, reader, &out, []age.Identity{id}); code != 1 {
@@ -268,7 +268,7 @@ func TestDecryptProcessStreams_cancellation_interrupts_blocked_input(t *testing.
 		t.Fatalf("create output: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	result := make(chan int, 1)
 	go func() {
 		result <- decryptProcessStreams(ctx, in, out, []age.Identity{id})
@@ -330,7 +330,7 @@ func TestDecryptProcessStreams_cancellation_returns_when_close_cannot_unblock(t 
 	// in production is reaped by os.Exit — does not leak past this test.
 	t.Cleanup(func() { close(in.release) })
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	result := make(chan int, 1)
 	go func() {
 		result <- decryptProcessStreams(ctx, in, blackholeWriteCloser{}, []age.Identity{id})

@@ -46,7 +46,7 @@ func TestDecryptAll_bare_mode_ignores_non_enc_files(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, nil)
+	result, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestDecryptAllSymlinkOutsideRoot(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	result, err := decryptAll(context.Background(), repoDir, []age.Identity{identity}, nil)
+	result, err := decryptAll(t.Context(), repoDir, []age.Identity{identity}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestDecryptAll_output_symlink_is_replaced_not_followed(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	result, err := decryptAll(context.Background(), repoDir, []age.Identity{identity}, nil)
+	result, err := decryptAll(t.Context(), repoDir, []age.Identity{identity}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestDecryptAll_candidate_suffix_edge_cases(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(tmpDir, "enc"), []byte(ageHeader+"\nfake"), 0o644)
 	_ = os.WriteFile(filepath.Join(tmpDir, "xenc"), []byte(ageHeader+"\nfake"), 0o644)
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, nil)
+	result, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestDecryptAll_ext_filters_on_output_name(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, []string{".env"})
+	result, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, []string{".env"})
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestDecryptAll_stray_ciphertext_fails_pass(t *testing.T) {
 	// A healthy source alongside it still decrypts.
 	_, out := writeEncSource(t, tmpDir, "app.env", []byte("OK=1\n"), identity.Recipient())
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, []string{".env"})
+	result, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, []string{".env"})
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestDecryptAll_plaintext_outputs_count_skipped(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(tmpDir, "app2.env"), []byte("KEY2=val2\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("ROOT_KEY=root\n"), 0o644)
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, []string{".env"})
+	result, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, []string{".env"})
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestDecryptAll_unreadable_ext_match_fails_closed(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(p, 0o644) })
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, []string{".env"})
+	result, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, []string{".env"})
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestDecryptAllWrongKey(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{decryptID}, nil)
+	result, err := decryptAll(t.Context(), tmpDir, []age.Identity{decryptID}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestDecryptAll_fails_oversized_encrypted_source(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, nil)
+	result, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestDecryptAll_counts_failed_and_skipped_under_ext(t *testing.T) {
 	// A plaintext .env (a generated output from an earlier pass) — Skipped.
 	_ = os.WriteFile(filepath.Join(tmpDir, "plain.env"), []byte("PLAIN=val\n"), 0o644)
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{decryptID}, []string{".env"})
+	result, err := decryptAll(t.Context(), tmpDir, []age.Identity{decryptID}, []string{".env"})
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestDecryptAll_counts_walk_errors(t *testing.T) {
 	_ = os.Chmod(noReadDir, 0o000)
 	t.Cleanup(func() { _ = os.Chmod(noReadDir, 0o755) })
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, nil)
+	result, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -581,7 +581,7 @@ func TestDecryptAll_sweeps_orphan_tmp_files(t *testing.T) {
 	original := []byte("NORMAL_KEY=value\n")
 	writeEncSource(t, tmpDir, "normal.env", original, identity.Recipient())
 
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, nil)
+	result, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
@@ -610,7 +610,7 @@ func TestDecryptAll_decrypts_file_encrypted_to_second_identity(t *testing.T) {
 	_, out := writeEncSource(t, tmpDir, "rotated.env", original, id2.Recipient())
 
 	// Sanity/negative control: id1 alone cannot decrypt an id2-encrypted file.
-	onlyID1, err := decryptAll(context.Background(), tmpDir, []age.Identity{id1}, nil)
+	onlyID1, err := decryptAll(t.Context(), tmpDir, []age.Identity{id1}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll(id1 only): %v", err)
 	}
@@ -620,7 +620,7 @@ func TestDecryptAll_decrypts_file_encrypted_to_second_identity(t *testing.T) {
 	assertNoOutput(t, out)
 
 	// The source is intact ciphertext; decrypt with both keys.
-	result, err := decryptAll(context.Background(), tmpDir, []age.Identity{id1, id2}, nil)
+	result, err := decryptAll(t.Context(), tmpDir, []age.Identity{id1, id2}, nil)
 	if err != nil {
 		t.Fatalf("decryptAll(id1, id2): %v", err)
 	}
@@ -652,7 +652,7 @@ func TestDecryptAll_rerun_is_stable(t *testing.T) {
 	}
 
 	for pass := 1; pass <= 2; pass++ {
-		result, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, []string{".env"})
+		result, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, []string{".env"})
 		if err != nil {
 			t.Fatalf("pass %d: %v", pass, err)
 		}
@@ -704,7 +704,7 @@ func TestDecryptAll_logs_one_orphan_removed(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	if _, err := decryptAll(context.Background(), tmpDir, []age.Identity{identity}, nil); err != nil {
+	if _, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, nil); err != nil {
 		t.Fatalf("decryptAll: %v", err)
 	}
 
