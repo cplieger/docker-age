@@ -7,7 +7,7 @@ import (
 )
 
 // TestParseConfig exercises the os.Args mode selection plus the two
-// env-var reads (AGE_KEY_FILE required, AGE_REPO_ROOT default /repo).
+// env-var reads (IDENTITY_PATH required, REPO_ROOT default /repo).
 func TestParseConfig(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -75,8 +75,8 @@ func TestParseConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			os.Args = tt.args
-			t.Setenv("AGE_KEY_FILE", tt.keyFile)
-			t.Setenv("AGE_REPO_ROOT", tt.repoRoot)
+			t.Setenv("IDENTITY_PATH", tt.keyFile)
+			t.Setenv("REPO_ROOT", tt.repoRoot)
 
 			cfg, err := parseConfig()
 			if tt.wantErr {
@@ -104,7 +104,7 @@ func TestParseConfig(t *testing.T) {
 // --- config parsing: --ext flags and positional args ---
 
 func TestParseConfig_extFlags(t *testing.T) {
-	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	t.Setenv("IDENTITY_PATH", "/tmp/fake.key")
 	tests := []struct {
 		name        string
 		args        []string
@@ -143,7 +143,7 @@ func TestParseConfig_extFlags(t *testing.T) {
 }
 
 func TestParseConfig_extDotPrefix(t *testing.T) {
-	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	t.Setenv("IDENTITY_PATH", "/tmp/fake.key")
 	os.Args = []string{"age", "decrypt", "--ext", "yaml"}
 	cfg, err := parseConfig()
 	if err != nil {
@@ -155,7 +155,7 @@ func TestParseConfig_extDotPrefix(t *testing.T) {
 }
 
 func TestParseConfig_extRequiresValue(t *testing.T) {
-	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	t.Setenv("IDENTITY_PATH", "/tmp/fake.key")
 	// A trailing "--ext" with no following value must error rather than index
 	// past args. Exercises the bounds check so a mutated guard (which would
 	// instead panic on out-of-range access or mis-parse) is caught.
@@ -166,7 +166,7 @@ func TestParseConfig_extRequiresValue(t *testing.T) {
 }
 
 func TestParseConfig_rejectsUnknownFlags(t *testing.T) {
-	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	t.Setenv("IDENTITY_PATH", "/tmp/fake.key")
 	origArgs := os.Args
 	t.Cleanup(func() { os.Args = origArgs })
 
@@ -200,7 +200,7 @@ func TestParseConfig_rejectsUnknownFlags(t *testing.T) {
 // route through normalizeExt and must error. Complements
 // TestParseConfig_extRequiresValue, which covers only the trailing bare --ext.
 func TestParseConfig_extRejectsEmptyValue(t *testing.T) {
-	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	t.Setenv("IDENTITY_PATH", "/tmp/fake.key")
 	tests := []struct {
 		name string
 		args []string
@@ -225,7 +225,7 @@ func TestParseConfig_extRejectsEmptyValue(t *testing.T) {
 // pointer to the correct form. The bare ".enc" gets the redundancy message
 // instead.
 func TestParseConfig_extRejectsEncSuffix(t *testing.T) {
-	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	t.Setenv("IDENTITY_PATH", "/tmp/fake.key")
 	origArgs := os.Args
 	t.Cleanup(func() { os.Args = origArgs })
 
@@ -251,7 +251,7 @@ func TestParseConfig_extRejectsEncSuffix(t *testing.T) {
 }
 
 func TestParseConfig_rejects_pathlike_or_ambiguous_ext(t *testing.T) {
-	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	t.Setenv("IDENTITY_PATH", "/tmp/fake.key")
 	tests := map[string]string{
 		"env/path":  "filename suffix",
 		`env\\path`: "filename suffix",
@@ -269,7 +269,7 @@ func TestParseConfig_rejects_pathlike_or_ambiguous_ext(t *testing.T) {
 }
 
 func TestParseConfig_rejects_stdin_combinations(t *testing.T) {
-	t.Setenv("AGE_KEY_FILE", "/tmp/fake.key")
+	t.Setenv("IDENTITY_PATH", "/tmp/fake.key")
 	tests := map[string][]string{
 		"stdin with extension": {"age", "decrypt", "--ext", ".env", "-"},
 		"stdin with file":      {"age", "decrypt", "-", "/tmp/file.env.enc"},

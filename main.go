@@ -22,15 +22,15 @@ func main() {
 		// RunProbe always exits the process (health lib contract). The explicit
 		// return makes that invariant local and structural: the probe process
 		// can never fall through into parseConfig (which would exit 2 without
-		// AGE_KEY_FILE) or the server path.
+		// IDENTITY_PATH) or the server path.
 		return
 	}
 
-	rawLevel := envx.String("AGE_LOG_LEVEL")
+	rawLevel := envx.String("LOG_LEVEL")
 	lvl, ok := slogx.ParseLevel(rawLevel, slog.LevelInfo)
 	slogx.Setup(slogx.Options{Level: lvl})
 	if !ok {
-		slog.Warn("invalid AGE_LOG_LEVEL, using default", "value", rawLevel, "default", "info")
+		slog.Warn("invalid LOG_LEVEL, using default", "value", rawLevel, "default", "info")
 	}
 
 	cfg, err := parseConfig()
@@ -223,7 +223,7 @@ func warnIfNoFilesSeen(result decryptResult, repoRoot string, targets []string) 
 		return
 	}
 	if len(targets) == 0 {
-		slog.Warn("no matching files found under repo root; check AGE_REPO_ROOT and the mount",
+		slog.Warn("no matching files found under repo root; check REPO_ROOT and the mount",
 			"repo_root", repoRoot)
 		return
 	}

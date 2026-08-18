@@ -17,7 +17,7 @@ Walks a mounted directory tree (or a single `.enc` file you name), finds every `
 
 The `age-decrypt` binary is a single static Go executable on `gcr.io/distroless/static:nonroot`:
 
-- `decrypt --ext .env`: decrypt every `.env.enc` in `AGE_REPO_ROOT` to its `.env` sibling (the deploy use case)
+- `decrypt --ext .env`: decrypt every `.env.enc` in `REPO_ROOT` to its `.env` sibling (the deploy use case)
 - `decrypt /path`: decrypt a specific `.enc` file or every `.enc` source under a directory tree
 - `decrypt -`: pipe, stdin ciphertext in, stdout plaintext out
 - `health`: file-based health probe for Docker `HEALTHCHECK`
@@ -64,8 +64,8 @@ services:
 
     environment:
       # Required: path to the age identity file (one identity per line).
-      AGE_KEY_FILE: "/age/keys.txt"
-      # AGE_REPO_ROOT defaults to /repo (the tree `decrypt` walks when no path is
+      IDENTITY_PATH: "/age/keys.txt"
+      # REPO_ROOT defaults to /repo (the tree `decrypt` walks when no path is
       # given). Set it only to target a SUBDIRECTORY of /repo; see the note below
       # on re-cloning orchestrators. A tree (or folder of many repos) mounted at
       # /repo is fine as-is.
@@ -84,14 +84,14 @@ docker exec age /age-decrypt decrypt --ext .env
 > **Re-cloning orchestrators:** if your deploy tool replaces the repo directory
 > (a new inode) on each sync, a container mounting that directory sees a stale
 > mount. Mount the stable **parent** at `/repo` and set
-> `AGE_REPO_ROOT=/repo/<repo-name>` so the walk re-resolves the child on every
+> `REPO_ROOT=/repo/<repo-name>` so the walk re-resolves the child on every
 > pass.
 
 Or as a fire-and-forget one-shot before deploy (no long-running container):
 
 ```bash
 docker run --rm \
-  -e AGE_KEY_FILE=/age/keys.txt \
+  -e IDENTITY_PATH=/age/keys.txt \
   -v $PWD/age-keys:/age:ro \
   -v $PWD/repo:/repo \
   ghcr.io/cplieger/docker-age:latest decrypt --ext .env
@@ -103,9 +103,9 @@ docker run --rm \
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `AGE_KEY_FILE` | Absolute path to the age identity file (one identity per line; all are tried, so key rotation works) | _required_ (example: `/age/keys.txt`) |
-| `AGE_REPO_ROOT` | Absolute path to the tree `decrypt` walks when no target path is given | `/repo` |
-| `AGE_LOG_LEVEL` | Log level: `debug`/`info`/`warn`/`error` (case-insensitive); `debug` shows per-file skip reasons | `info` |
+| `IDENTITY_PATH` | Absolute path to the age identity file (one identity per line; all are tried, so key rotation works) | _required_ (example: `/age/keys.txt`) |
+| `REPO_ROOT` | Absolute path to the tree `decrypt` walks when no target path is given | `/repo` |
+| `LOG_LEVEL` | Log level: `debug`/`info`/`warn`/`error` (case-insensitive); `debug` shows per-file skip reasons | `info` |
 
 ### Volumes
 
@@ -126,9 +126,9 @@ The `decrypt` subcommand requires **at least one** of: `--ext`, a target path, o
 
 | Input | Behavior |
 | --- | --- |
-| `decrypt --ext .env` | Walk `AGE_REPO_ROOT`, decrypt every `*.env.enc` to its `.env` sibling |
-| `decrypt --ext .env --ext .yaml` | Walk `AGE_REPO_ROOT`, decrypt `*.env.enc` OR `*.yaml.enc` sources |
-| `decrypt --ext .env /path/to/dir` | Walk the given directory (not `AGE_REPO_ROOT`), same filter |
+| `decrypt --ext .env` | Walk `REPO_ROOT`, decrypt every `*.env.enc` to its `.env` sibling |
+| `decrypt --ext .env --ext .yaml` | Walk `REPO_ROOT`, decrypt `*.env.enc` OR `*.yaml.enc` sources |
+| `decrypt --ext .env /path/to/dir` | Walk the given directory (not `REPO_ROOT`), same filter |
 | `decrypt /path/to/file.env.enc` | Decrypt that one source to `/path/to/file.env` (explicit target must be `.enc`) |
 | `decrypt /path/to/dir` | Walk that directory, decrypt **all** `.enc` sources (no filter) |
 | `decrypt -` | Pipe: read ciphertext from stdin, write plaintext to stdout |

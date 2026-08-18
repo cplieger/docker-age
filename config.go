@@ -49,7 +49,7 @@ func parseConfig() (config, error) {
 			}
 		case modeHealth:
 			// Dispatched in main before parseConfig runs (the probe must work
-			// without AGE_KEY_FILE), so this case is normally unreachable; it
+			// without IDENTITY_PATH), so this case is normally unreachable; it
 			// stays so parseConfig names the full CLI surface (pinned by
 			// config_test.go) instead of mislabeling `health` as unknown.
 			mode = modeHealth
@@ -58,12 +58,12 @@ func parseConfig() (config, error) {
 		}
 	}
 
-	keyFile, err := envx.Require("AGE_KEY_FILE")
+	keyFile, err := envx.Require("IDENTITY_PATH")
 	if err != nil {
 		return config{}, err
 	}
 
-	repoRoot := cmp.Or(envx.String("AGE_REPO_ROOT"), "/repo")
+	repoRoot := cmp.Or(envx.String("REPO_ROOT"), "/repo")
 
 	return config{
 		KeyFile:    keyFile,

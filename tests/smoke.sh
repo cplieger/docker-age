@@ -73,7 +73,7 @@ if ! printf '%s' "$plaintext" | age --encrypt --recipient "$recipient" --output 
   exit 1
 fi
 cp "$repo/secret.env.enc" "$work/secret.env.enc.orig"
-if AGE_KEY_FILE="$key" "$bin" decrypt --ext .env "$repo" 2>"$work/err1"; then
+if IDENTITY_PATH="$key" "$bin" decrypt --ext .env "$repo" 2>"$work/err1"; then
   got=$(cat "$repo/secret.env")
   if [ "$got" != "$plaintext" ]; then
     err "FAIL: sibling decrypt did not produce the expected plaintext (got: $got)"
@@ -96,7 +96,7 @@ if ! printf '%s' "$plaintext" | age --encrypt --armor --recipient "$recipient" -
   err "FAIL: could not create the armored fixture"
   exit 1
 fi
-if out=$(AGE_KEY_FILE="$key" "$bin" decrypt - <"$work/secret.age" 2>"$work/err2"); then
+if out=$(IDENTITY_PATH="$key" "$bin" decrypt - <"$work/secret.age" 2>"$work/err2"); then
   if [ "$out" != "$plaintext" ]; then
     err "FAIL: stdin decrypt did not restore the expected plaintext (got: $out)"
     fail=1
@@ -110,7 +110,7 @@ fi
 # 3. Negative: a non-age payload must be rejected with a non-zero exit. This
 #    proves the binary runs and validates its input, not merely that it exists
 #    (a bare "binary is present" check would be a tautology).
-if printf 'this is not age ciphertext\n' | AGE_KEY_FILE="$key" "$bin" decrypt - >/dev/null 2>&1; then
+if printf 'this is not age ciphertext\n' | IDENTITY_PATH="$key" "$bin" decrypt - >/dev/null 2>&1; then
   err "FAIL: 'age-decrypt decrypt -' accepted non-age input (expected non-zero exit)"
   fail=1
 fi
@@ -124,7 +124,7 @@ if ! printf '%s' "$plaintext" | age --encrypt --recipient "$recipient" --output 
   err "FAIL: could not create the stray-ciphertext fixture"
   exit 1
 fi
-if AGE_KEY_FILE="$key" "$bin" decrypt --ext .env "$stray" >/dev/null 2>&1; then
+if IDENTITY_PATH="$key" "$bin" decrypt --ext .env "$stray" >/dev/null 2>&1; then
   err "FAIL: stray ciphertext at legacy.env did not fail the pass (expected non-zero exit)"
   fail=1
 fi
@@ -134,7 +134,7 @@ fi
 plainenc="$work/plainenc-repo"
 mkdir -p "$plainenc"
 printf 'NOT=encrypted\n' >"$plainenc/broken.env.enc"
-if AGE_KEY_FILE="$key" "$bin" decrypt --ext .env "$plainenc" >/dev/null 2>&1; then
+if IDENTITY_PATH="$key" "$bin" decrypt --ext .env "$plainenc" >/dev/null 2>&1; then
   err "FAIL: plaintext under broken.env.enc did not fail the pass (expected non-zero exit)"
   fail=1
 fi
@@ -146,7 +146,7 @@ invalidnames="$work/invalid-name-repo"
 mkdir -p "$invalidnames"
 printf 'invalid\n' >"$invalidnames/.enc"
 printf 'invalid\n' >"$invalidnames/app.env.enc.enc"
-if AGE_KEY_FILE="$key" "$bin" decrypt --ext .env "$invalidnames" >/dev/null 2>&1; then
+if IDENTITY_PATH="$key" "$bin" decrypt --ext .env "$invalidnames" >/dev/null 2>&1; then
   err "FAIL: malformed .enc names were hidden by --ext (expected non-zero exit)"
   fail=1
 fi
