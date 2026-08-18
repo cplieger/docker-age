@@ -23,8 +23,8 @@ Flat `package main`, one concern per file:
   `runServer`), plus the file-based health marker/probe wiring via
   `github.com/cplieger/health`. The `health` probe is intercepted here
   _before_ `parseConfig` runs, because the probe must work without
-  `AGE_KEY_FILE` set.
-- `config.go`: env-var parsing (`AGE_KEY_FILE`, `AGE_REPO_ROOT`) and mode
+  `IDENTITY_PATH` set.
+- `config.go`: env-var parsing (`IDENTITY_PATH`, `REPO_ROOT`) and mode
   selection from `os.Args[1]` (`decrypt` → decrypt mode with `--ext`/path/pipe parsing, `health` → probe,
   empty → server).
 - `identity.go`: `loadIdentities` loads **all** age identities from the key

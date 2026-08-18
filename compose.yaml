@@ -7,7 +7,7 @@ services:
     restart: unless-stopped  # always-on: stays up between deploys as an exec target
 
     environment:
-      AGE_KEY_FILE: "/age/keys.txt"  # required; age identity file
+      IDENTITY_PATH: "/age/keys.txt"  # required; age identity file
 
     volumes:
       - "/path/to/age-keys:/age:ro"  # dir holding the age identity (keys.txt)

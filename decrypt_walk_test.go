@@ -599,7 +599,7 @@ func TestDecryptAll_sweeps_orphan_tmp_files(t *testing.T) {
 
 // A source encrypted to the SECOND identity in the key file must decrypt when
 // both identities are passed — the multi-identity key-rotation path
-// (AGE_KEY_FILE documents "one identity per line"). The negative control
+// (the IDENTITY_PATH file documents "one identity per line"). The negative control
 // (only id1) confirms the file genuinely requires id2.
 func TestDecryptAll_decrypts_file_encrypted_to_second_identity(t *testing.T) {
 	id1 := newIdentity(t)

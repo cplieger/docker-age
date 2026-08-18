@@ -14,14 +14,14 @@ import (
 // caller survives future key-type changes (plugin, passphrase, etc.) without
 // any downstream signature churn. All parsed identities are returned and
 // forwarded to the variadic age.Decrypt so multi-identity key rotation
-// (AGE_KEY_FILE documents "one identity per line") works as intended.
+// (the IDENTITY_PATH file documents "one identity per line") works as intended.
 //
 // It rejects files larger than 1 MB to prevent OOM on misconfigured mounts.
 func loadIdentities(path string) ([]age.Identity, error) {
-	// Path comes from the AGE_KEY_FILE environment variable
+	// Path comes from the IDENTITY_PATH environment variable
 	// (operator-supplied, read in config.go), not from any untrusted
 	// input — gosec G304 is a false positive here.
-	f, err := os.Open(path) // #nosec G304 -- AGE_KEY_FILE env-sourced trusted path
+	f, err := os.Open(path) // #nosec G304 -- IDENTITY_PATH env-sourced trusted path
 	if err != nil {
 		return nil, fmt.Errorf("open key file: %w", err)
 	}
@@ -48,7 +48,7 @@ func loadIdentities(path string) ([]age.Identity, error) {
 		// "unknown identity type: %q"); drop it so a misconfigured key
 		// file never leaks its contents into stderr/Loki.
 		return nil, errors.New("parse key file: malformed identity " +
-			"(contents omitted; AGE_KEY_FILE must be one age identity per line)")
+			"(contents omitted; the IDENTITY_PATH file must hold one age identity per line)")
 	}
 	if len(identities) == 0 {
 		return nil, errors.New("no identities found in key file")
