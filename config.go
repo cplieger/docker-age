@@ -5,6 +5,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"os"
@@ -62,7 +63,7 @@ func parseConfig() (config, error) {
 		return config{}, err
 	}
 
-	repoRoot := envx.String("AGE_REPO_ROOT", "/repo")
+	repoRoot := cmp.Or(envx.String("AGE_REPO_ROOT"), "/repo")
 
 	return config{
 		KeyFile:    keyFile,

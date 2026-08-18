@@ -26,7 +26,7 @@ func main() {
 		return
 	}
 
-	rawLevel := envx.String("AGE_LOG_LEVEL", "")
+	rawLevel := envx.String("AGE_LOG_LEVEL")
 	lvl, ok := slogx.ParseLevel(rawLevel, slog.LevelInfo)
 	slogx.Setup(slogx.Options{Level: lvl})
 	if !ok {
