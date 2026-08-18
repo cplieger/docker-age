@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"filippo.io/age"
+	"github.com/cplieger/envx/v2"
 	"github.com/cplieger/health"
 	"github.com/cplieger/slogx"
 )
@@ -25,7 +26,7 @@ func main() {
 		return
 	}
 
-	rawLevel := os.Getenv("AGE_LOG_LEVEL")
+	rawLevel := envx.String("AGE_LOG_LEVEL", "")
 	lvl, ok := slogx.ParseLevel(rawLevel, slog.LevelInfo)
 	slogx.Setup(slogx.Options{Level: lvl})
 	if !ok {
