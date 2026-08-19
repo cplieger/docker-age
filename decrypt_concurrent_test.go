@@ -222,6 +222,11 @@ func TestIsOrphanTmpFile(t *testing.T) {
 		{name: "legacy pid-keyed suffix no longer matched", input: "app.env.tmp.12345.7", want: false},
 		{name: "marker not at end", input: "note" + tmpSuffix + ".bak", want: false},
 		{name: "marker substring missing leading dot", input: "fileage-decrypt-tmp", want: false},
+		// The two empty-output-name boundaries: the token separator sits at
+		// index 0, so there is no output name in front of it. outputRelFor
+		// refuses a bare ".enc" source, so no pass can generate either shape.
+		{name: "random token with no output name", input: ".0123456789abcdef0123456789abcdef" + tmpSuffix, want: false},
+		{name: "legacy pid/counter with no output name", input: ".12345.7" + tmpSuffix, want: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
