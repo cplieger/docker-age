@@ -602,17 +602,19 @@ func isOrphanTmpFile(name string) bool {
 	if !ok {
 		return false
 	}
-	lastDot := strings.LastIndexByte(stem, '.')
-	if lastDot <= 0 {
+	// A dot at index 0 is not a separator for this grammar: every generated
+	// temp is named after a non-empty output name, so an empty stem before the
+	// token is refused (outputRelFor already refuses a bare ".enc" source, so
+	// an empty output name cannot occur).
+	base, token, found := strings.CutLast(stem, ".")
+	if !found || base == "" {
 		return false
 	}
-	last := stem[lastDot+1:]
-	if len(last) == tempTokenBytes*2 && isLowerHex(last) {
+	if len(token) == tempTokenBytes*2 && isLowerHex(token) {
 		return true
 	}
-	counterStem := stem[:lastDot]
-	pidDot := strings.LastIndexByte(counterStem, '.')
-	return pidDot > 0 && isPositiveDecimal(counterStem[pidDot+1:]) && isPositiveDecimal(last)
+	outName, pid, pidFound := strings.CutLast(base, ".")
+	return pidFound && outName != "" && isPositiveDecimal(pid) && isPositiveDecimal(token)
 }
 
 func isLowerHex(s string) bool {
