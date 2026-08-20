@@ -1,6 +1,7 @@
 *.log
 .DS_Store
 /age-decrypt
+/docker-age
 
 # Kiro skill artifacts (app-review, judgement, steering-maintenance)
 **/.app-review/
