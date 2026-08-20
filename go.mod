@@ -9,6 +9,7 @@ require (
 	github.com/cplieger/envx/v2 v2.0.0
 	github.com/cplieger/health v1.6.0
 	github.com/cplieger/pathinside v1.0.2 // indirect
+	github.com/cplieger/pathinside/v2 v2.0.0 // indirect
 	github.com/cplieger/slogx v1.6.3
 	pgregory.net/rapid v1.3.0
 	golang.org/x/crypto v0.55.0 // indirect
