@@ -208,6 +208,7 @@ func TestIsOrphanTmpFile(t *testing.T) {
 		want  bool
 	}{
 		{name: "env legacy temp", input: "app.env.12345.7" + tmpSuffix, want: true},
+		{name: "legacy temp whose pid and counter carry zero digits", input: "app.env.1024.10" + tmpSuffix, want: true},
 		{name: "bare dotenv legacy temp", input: ".env.99999.1" + tmpSuffix, want: true},
 		{name: "non-env legacy temp", input: "config.yaml.4242.2" + tmpSuffix, want: true},
 		{name: "json legacy temp", input: "secrets.json.1.1" + tmpSuffix, want: true},

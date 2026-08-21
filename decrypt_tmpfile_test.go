@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cplieger/slogx/capture"
 )
 
 // Tests for the atomic-write temp-file lifecycle in decrypt.go:
@@ -25,6 +27,8 @@ import (
 // lingers on disk. A deterministic rename failure is forced by making the
 // directory: renaming a file onto a directory fails (EISDIR).
 func TestWriteDecryptedSibling_rename_failure_leaves_no_plaintext_debris(t *testing.T) {
+	// Not parallel: capture.Default swaps the global slog default.
+	rec := capture.Default(t)
 	tmpDir := t.TempDir()
 	out := "target"
 	if err := os.Mkdir(filepath.Join(tmpDir, out), 0o755); err != nil {
@@ -52,6 +56,17 @@ func TestWriteDecryptedSibling_rename_failure_leaves_no_plaintext_debris(t *test
 		if isOrphanTmpFile(e.Name()) {
 			t.Errorf("rename-failure left plaintext temp debris: %q", e.Name())
 		}
+	}
+
+	// The publish failure is reported once, and the wipe that followed it is
+	// reported not at all: an operator reading a failed deploy must be able to
+	// take "temp cleanup error" as evidence that decrypted bytes really were
+	// left behind, which a line emitted on every successful wipe would destroy.
+	if got := rec.CountExact("rename error"); got != 1 {
+		t.Errorf("rename-error records = %d, want 1 (messages=%v)", got, rec.Messages())
+	}
+	if got := rec.CountExact("temp cleanup error"); got != 0 {
+		t.Errorf("temp-cleanup-error records = %d, want 0 (the cleanup succeeded) (messages=%v)", got, rec.Messages())
 	}
 }
 
@@ -483,5 +498,101 @@ func TestWipeOwnedTempFile_zeroes_the_cleartext_it_unlinks(t *testing.T) {
 	}
 	if len(after) != 0 {
 		t.Errorf("wiped inode still holds %d bytes (%q), want it zeroed: an unlinked-but-intact inode keeps decrypted secrets readable to any open descriptor", len(after), after)
+	}
+}
+
+// TestWipeOwnedTempFile_wipes_a_temp_it_was_given_no_fstat_for covers the
+// cleanup shape the EARLY failures produce. writeDecryptedSibling captures the
+// owning fstat only after the sync, so a write, chmod or sync error runs the
+// deferred wipe with a still-open descriptor and no `expected` inode at all —
+// and that is exactly the run that has decrypted plaintext sitting in a file it
+// must not leave behind. The wipe has to fall back to the descriptor's own stat
+// there; without it, every path check downstream has nothing to compare against
+// and refuses to touch the temp, stranding the cleartext on disk.
+//
+// The sibling test above supplies the fstat, so it exercises the other half.
+//
+// given an owned plaintext temp, a witness descriptor on its inode, and no
+// expected fstat
+// when wipeOwnedTempFile runs
+// then it succeeds, the name is gone, and the witness reads back empty.
+func TestWipeOwnedTempFile_wipes_a_temp_it_was_given_no_fstat_for(t *testing.T) {
+	tmpDir := t.TempDir()
+	rootDir, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = rootDir.Close() }()
+
+	cleartext := []byte("SECRET=plaintext\n")
+	tmpName, temp, _ := newPlaintextTemp(t, rootDir, "app.env", cleartext)
+	tmpPath := filepath.Join(tmpDir, tmpName)
+
+	witness, err := os.Open(tmpPath)
+	if err != nil {
+		t.Fatalf("open witness descriptor: %v", err)
+	}
+	defer func() { _ = witness.Close() }()
+	before, err := io.ReadAll(witness)
+	if err != nil {
+		t.Fatalf("read witness before wipe: %v", err)
+	}
+	if !bytes.Equal(before, cleartext) {
+		t.Fatalf("INVALID: witness read %q before the wipe, want the cleartext %q — an empty read after the wipe would prove nothing", before, cleartext)
+	}
+
+	if wipeErr := wipeOwnedTempFile(rootDir, tmpName, temp, nil); wipeErr != nil {
+		t.Fatalf("wipeOwnedTempFile(no expected fstat) = %v, want nil: the temp holds decrypted plaintext and must be reclaimed", wipeErr)
+	}
+
+	if _, statErr := os.Lstat(tmpPath); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("temp name still present after wipe, lstat err = %v", statErr)
+	}
+	if _, seekErr := witness.Seek(0, io.SeekStart); seekErr != nil {
+		t.Fatalf("rewind witness: %v", seekErr)
+	}
+	after, err := io.ReadAll(witness)
+	if err != nil {
+		t.Fatalf("read witness after wipe: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("wiped inode still holds %d bytes (%q), want it zeroed", len(after), after)
+	}
+}
+
+// TestWriteAll_reports_the_failure_the_descriptor_gave pins that the plaintext
+// writer surfaces the real cause. In production the cause is a full or quota'd
+// filesystem, and it reaches the operator only as the `error` attr of the
+// "write error" line; substituting a generic short-write sentinel there would
+// send them looking for a corrupt secret instead of a full disk. A closed
+// descriptor stands in for the unwritable one: it is the one write failure a
+// test can force without a filesystem that can fail.
+//
+// given a descriptor that cannot accept bytes
+// when writeAll writes to it
+// then the descriptor's own error comes back, not a substitute.
+func TestWriteAll_reports_the_failure_the_descriptor_gave(t *testing.T) {
+	tmpDir := t.TempDir()
+	rootDir, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer func() { _ = rootDir.Close() }()
+
+	tmpName, temp, _ := newPlaintextTemp(t, rootDir, "app.env", nil)
+	if closeErr := temp.Close(); closeErr != nil {
+		t.Fatalf("close temp: %v", closeErr)
+	}
+	t.Cleanup(func() { _ = rootDir.Remove(tmpName) })
+
+	err = writeAll(temp, []byte("SECRET=plaintext\n"))
+	if err == nil {
+		t.Fatal("writeAll(closed descriptor) = nil, want the descriptor's write error")
+	}
+	if !errors.Is(err, os.ErrClosed) {
+		t.Errorf("writeAll(closed descriptor) = %v, want it to carry os.ErrClosed", err)
+	}
+	if errors.Is(err, io.ErrShortWrite) {
+		t.Errorf("writeAll(closed descriptor) = %v, want the descriptor's cause rather than a short-write substitute", err)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"github.com/cplieger/slogx/capture"
 )
 
 // TestDecryptStream exercises the extracted pipe core directly: it reads from
@@ -78,6 +79,46 @@ func TestDecryptStream(t *testing.T) {
 			}
 			if !bytes.Equal(out.Bytes(), tc.wantOut) {
 				t.Errorf("decryptStream out = %q, want %q", out.Bytes(), tc.wantOut)
+			}
+		})
+	}
+}
+
+// The 10 MB encrypted-input cap is inclusive. An input of exactly that many
+// bytes must reach the format check, and one byte more must be turned away for
+// size before anything else is attempted. Both refusals exit 1, so the exit code
+// cannot tell them apart and the diagnostic is the only witness — and it is what
+// tells an operator whether the payload is too big or simply not age-encrypted.
+// TestDecryptStream above deliberately ignores diagnostics; this pins the pair
+// the size boundary decides between.
+func TestDecryptStream_encrypted_input_cap_is_inclusive(t *testing.T) {
+	id := newIdentity(t)
+	tests := []struct {
+		name    string
+		size    int
+		wantMsg string
+	}{
+		{name: "exactly at the cap", size: maxEncryptedSize, wantMsg: "decrypt-stdin input is not age-encrypted"},
+		{name: "one byte over the cap", size: maxEncryptedSize + 1, wantMsg: "decrypt-stdin input exceeds size limit"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Not parallel: capture.Default swaps the global slog default.
+			rec := capture.Default(t)
+			var out bytes.Buffer
+
+			code := decryptStream(t.Context(), bytes.NewReader(bytes.Repeat([]byte("X"), tc.size)), &out, []age.Identity{id})
+			if code != 1 {
+				t.Errorf("decryptStream(%d bytes) = %d, want 1", tc.size, code)
+			}
+			if out.Len() != 0 {
+				t.Errorf("decryptStream(%d bytes) wrote %q, want nothing", tc.size, out.Bytes())
+			}
+			if got := rec.CountExact(tc.wantMsg); got != 1 {
+				t.Errorf("decryptStream(%d bytes) logged %v, want exactly one %q", tc.size, rec.Messages(), tc.wantMsg)
+			}
+			if rec.Len() != 1 {
+				t.Errorf("decryptStream(%d bytes) logged %d records (%v), want exactly one", tc.size, rec.Len(), rec.Messages())
 			}
 		})
 	}
