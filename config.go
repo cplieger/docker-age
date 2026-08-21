@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/cplieger/envx"
+	"github.com/cplieger/envx/v2"
 )
 
 type config struct {
