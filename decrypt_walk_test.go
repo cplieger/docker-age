@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"github.com/cplieger/slogx/capture"
 )
 
 // Tests for decryptAll, the directory-walk orchestration: per-outcome
@@ -378,6 +379,8 @@ func TestDecryptAll_rejects_nonexistent_root(t *testing.T) {
 }
 
 func TestDecryptAll_fails_oversized_encrypted_source(t *testing.T) {
+	// Not parallel: capture.Default swaps the global slog default.
+	rec := capture.Default(t)
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
@@ -397,6 +400,18 @@ func TestDecryptAll_fails_oversized_encrypted_source(t *testing.T) {
 	}
 	assertNoOutput(t, filepath.Join(tmpDir, "huge.env"))
 
+	// Both this guard and a failed decrypt count the same way, so the
+	// operator's only evidence for WHY the deploy stopped is the diagnostic.
+	// It must name the size refusal, and report the bytes the reader actually
+	// took in: one past the cap, never the whole file.
+	if got := rec.CountExact("file exceeds max encrypted-input size, treating as failure"); got != 1 {
+		t.Errorf("size-refusal records = %d, want 1 (messages=%v)", got, rec.Messages())
+	}
+	if !rec.HasAttr("file exceeds max encrypted-input size", "size", "10485761") {
+		got, ok := rec.AttrValue("file exceeds max encrypted-input size", "size")
+		t.Errorf("size attr = %q (found=%v), want 10485761 (one byte past the cap)", got, ok)
+	}
+
 	data, err := os.ReadFile(srcPath)
 	if err != nil {
 		t.Fatalf("read: %v", err)
@@ -404,6 +419,78 @@ func TestDecryptAll_fails_oversized_encrypted_source(t *testing.T) {
 	if len(data) <= 10<<20 {
 		t.Error("oversized source was modified")
 	}
+}
+
+// The 10 MB encrypted-input cap is inclusive: a source of exactly that many
+// bytes must reach the decrypt step rather than being turned away for size.
+// Nothing in the counts can show which guard refused — an over-cap source and
+// an undecryptable one are both one Failed — so the diagnostic is the only
+// witness, and it is what tells an operator whether to shrink the secret or
+// re-encrypt it. The payload here is padding, so the pass still fails; what is
+// pinned is that it fails at the decrypt, one guard later.
+func TestDecryptAll_source_at_the_encrypted_size_cap_reaches_the_decrypt(t *testing.T) {
+	// Not parallel: capture.Default swaps the global slog default.
+	rec := capture.Default(t)
+	identity := newIdentity(t)
+	tmpDir := t.TempDir()
+
+	header := []byte(ageHeader + "\n")
+	atCap := append(header, bytes.Repeat([]byte("X"), maxEncryptedSize-len(header))...)
+	if len(atCap) != maxEncryptedSize {
+		t.Fatalf("fixture is %d bytes, want exactly %d", len(atCap), maxEncryptedSize)
+	}
+	srcPath := filepath.Join(tmpDir, "atcap.env"+encSuffix)
+	if err := os.WriteFile(srcPath, atCap, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	result, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, nil)
+	if err != nil {
+		t.Fatalf("decryptAll: %v", err)
+	}
+	if result.Decrypted != 0 || result.Failed != 1 {
+		t.Fatalf("Decrypted=%d Failed=%d, want 0 and 1", result.Decrypted, result.Failed)
+	}
+	if got := rec.CountExact("decrypt error"); got != 1 {
+		t.Errorf("decrypt-error records = %d, want 1 (messages=%v)", got, rec.Messages())
+	}
+	if got := rec.Count("file exceeds max encrypted-input size"); got != 0 {
+		t.Errorf("size-refusal records = %d, want 0: a source exactly at the cap is within it", got)
+	}
+	assertNoOutput(t, filepath.Join(tmpDir, "atcap.env"))
+	assertSourcePreserved(t, srcPath, atCap)
+}
+
+// A directory whose name ends in .enc is a candidate by name and can never be
+// one in fact. It must fail the pass rather than be skipped: the deploy reads
+// plaintext at the sibling path, and silently walking past the thing that was
+// supposed to produce it would hand the deploy a missing secret with a clean
+// exit. A valid source alongside it still decrypts — one bad candidate fails
+// the pass without stopping the walk.
+func TestDecryptAll_directory_named_like_a_ciphertext_source_fails_closed(t *testing.T) {
+	identity := newIdentity(t)
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "bundle.env"+encSuffix), 0o755); err != nil {
+		t.Fatalf("mkdir candidate directory: %v", err)
+	}
+	original := []byte("GOOD=value\n")
+	_, out := writeEncSource(t, dir, "app.env", original, identity.Recipient())
+
+	result, err := decryptAll(t.Context(), dir, []age.Identity{identity}, nil)
+	if err != nil {
+		t.Fatalf("decryptAll: %v", err)
+	}
+	if result.Failed != 1 || result.Decrypted != 1 {
+		t.Errorf("result = %+v, want Failed=1 (the directory) and Decrypted=1 (the real source)", result)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Errorf("output %s = %q, want %q", out, got, original)
+	}
+	assertNoOutput(t, filepath.Join(dir, "bundle.env"))
 }
 
 func TestDecryptAll_handles_mixed_armored_and_binary(t *testing.T) {
