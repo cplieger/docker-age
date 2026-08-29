@@ -3,7 +3,7 @@ module github.com/cplieger/docker-age/v3
 go 1.27.0
 
 require (
-	filippo.io/age v1.3.1
+	filippo.io/age v1.3.2
 	github.com/cplieger/envx/v2 v2.0.1
 	github.com/cplieger/health v1.6.0
 	github.com/cplieger/slogx v1.6.3
