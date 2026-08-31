@@ -9,6 +9,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/docker-age/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/docker-age)
 [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/docker-age/releases)
 
+<!-- hub-overview BEGIN -->
 Decrypt [age](https://github.com/FiloSottile/age)-encrypted `.enc` files to their plaintext siblings at deploy time so your orchestrator can read them: `.env` files, any other config, or a single file piped through stdin/stdout. Ciphertext stays tracked in git; plaintext is generated next to it and never committed.
 
 ## What it does
@@ -35,6 +36,7 @@ The `decrypt` subcommand always requires you to say **what** to decrypt (an exte
 - **Distroless + nonroot**: minimal attack surface; no shell, no package manager, no extra binaries
 - **Per-file bounds**: each encrypted input is capped at 10 MB and each decrypted output at 1 MB; plaintext is published mode 0600
 - **File-based health marker**: works with Docker's no-shell distroless healthcheck (`HEALTHCHECK CMD ["/age-decrypt", "health"]`)
+<!-- hub-overview END -->
 
 ## Quick start
 
