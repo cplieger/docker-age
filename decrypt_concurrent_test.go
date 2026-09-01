@@ -168,6 +168,9 @@ func TestDecryptFile_random_tmp_is_reclaimed(t *testing.T) {
 
 	// The output holds the plaintext and the source survives as ciphertext.
 	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
 	if !bytes.Equal(got, original) {
 		t.Errorf("output content = %q, want %q", got, original)
 	}
