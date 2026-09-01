@@ -17,21 +17,7 @@ func runDecryptStdin(ctx context.Context, identities []age.Identity) int {
 	return decryptProcessStreams(ctx, os.Stdin, os.Stdout, identities)
 }
 
-// decryptProcessStreams makes blocking process I/O interruptible. It runs the
-// pure decryptStream core in a goroutine and stops waiting the moment the
-// context is canceled, so `decrypt -` exits promptly on SIGINT/SIGTERM
-// regardless of which descriptor backs stdin/stdout.
-//
-// The closing helper below unblocks an in-flight read/write only on a POLLABLE
-// descriptor (an os.Pipe, a socket). The std streams the real CLI inherits — a
-// shell-redirected FIFO, a `docker exec -i` pipe — are plain BLOCKING
-// descriptors the Go runtime never registers with its poller, so Close does
-// NOT interrupt their in-flight syscall. Selecting on ctx.Done is what
-// guarantees forward progress: run() returns 1 and main os.Exit's, reaping the
-// (possibly still-blocked) goroutine. decryptStream keeps its own ctx checks at
-// every publish boundary, so a canceled pass never reports success and never
-// publishes after observing cancellation. The buffered result channel lets the
-// goroutine send and exit even when no one is left to receive.
+// decryptProcessStreams returns on cancellation because inherited FIFO and docker exec streams can block past Close.
 func decryptProcessStreams(ctx context.Context, in io.ReadCloser, out io.WriteCloser, identities []age.Identity) int {
 	stopInterrupt := interruptStreamsOnCancel(ctx, in, out)
 	defer stopInterrupt()

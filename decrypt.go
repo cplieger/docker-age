@@ -24,31 +24,17 @@ const (
 	ageHeader     = "age-encryption.org/v1"
 	armoredHeader = "-----BEGIN AGE ENCRYPTED FILE-----"
 
-	// encSuffix marks a ciphertext source. `decrypt` only ever reads
-	// `<name>.enc` files and writes the decrypted plaintext to the sibling
-	// `<name>`; the source is never modified. The suffix is the contract that
-	// keeps the ciphertext plane (tracked in git) and the plaintext plane
-	// (generated, gitignored) apart.
+	// encSuffix separates tracked ciphertext from generated plaintext.
 	encSuffix = ".enc"
 
-	// tmpSuffix terminates the reserved temp-file namespace. New v3 temps use
-	// <output>.<32-lowercase-hex-chars>.age-decrypt-tmp; the orphan sweep also
-	// recognizes the strict legacy <output>.<pid>.<counter> form so upgrades
-	// can reclaim plaintext left by an interrupted v2 pass. The namespace is
-	// deliberately strict: a generic suffix match could delete an unrelated
-	// user file.
+	// tmpSuffix identifies only reserved decrypt temp names.
 	tmpSuffix = ".age-decrypt-tmp"
 
 	tempTokenBytes        = 16 // 128 bits; encoded as 32 lowercase hex chars
 	maxTempCreateAttempts = 32
 )
 
-// Size caps shared by every decrypt path (the file walk in decryptFile and
-// the stdin pipe in decryptStream). Both enforce the same documented
-// contract: a 10 MB cap on encrypted input (reject oversized inputs to avoid
-// OOM if a large file ends up with the .enc suffix) and a 1 MB cap on
-// decrypted output (guard against decompression bombs). Declaring them once
-// here keeps the two paths from silently diverging.
+// Encrypted input and plaintext output remain bounded on every decrypt path.
 const (
 	maxEncryptedSize = 10 << 20 // 10 MB cap on age ciphertext input
 	maxDecryptedSize = 1 << 20  // 1 MB cap on decrypted plaintext output
@@ -102,16 +88,7 @@ func ageReader(format ageFormat, data []byte) io.Reader {
 	return r
 }
 
-// outputRelFor derives the plaintext output path for a .enc source: the same
-// path minus the suffix. It rejects three names that cannot have a sane
-// sibling. A non-.enc input is refused outright — defense in depth: every
-// caller already filters on the suffix, and this guard makes it structurally
-// impossible for a mis-routed call to derive an output equal to its source
-// and overwrite ciphertext in place. A bare ".enc" has an empty output name.
-// A double-suffixed "<x>.enc.enc" strips to "<x>.enc", which itself looks
-// like a ciphertext source — the NEXT pass would classify the freshly written
-// plaintext as a failed candidate, so it fails loudly now, when the misnamed
-// file appears, instead of one pass later.
+// outputRelFor rejects names that could overwrite or reclassify ciphertext.
 func outputRelFor(rel string) (string, error) {
 	if !strings.HasSuffix(rel, encSuffix) {
 		return "", fmt.Errorf("source %q does not end in %s", rel, encSuffix)
@@ -157,10 +134,7 @@ func validateSingleLinkRegular(info os.FileInfo) error {
 	return nil
 }
 
-// openRegularReadOnly opens one path nonblocking and requires both Lstat
-// snapshots and the opened descriptor to identify the same regular inode. This
-// rejects final symlinks and closes the check/use gap that would otherwise let
-// a regular file be swapped for a FIFO or device before the read.
+// openRegularReadOnly rejects final symlinks and source replacement during open.
 func openRegularReadOnly(rootDir *os.Root, rel string) (*os.File, error) {
 	before, err := rootDir.Lstat(rel)
 	if err != nil {
@@ -199,11 +173,7 @@ func openRegularReadOnly(rootDir *os.Root, rel string) (*os.File, error) {
 	return f, nil
 }
 
-// decryptFile reads one .enc ciphertext source and atomically writes its
-// decrypted plaintext to the sibling output path (the source path minus
-// .enc). The source is never modified. Returns fileDecrypted on success,
-// fileFailed when the source is not valid age ciphertext or the sibling
-// cannot be written, and fileSkipped only for a canceled context.
+// decryptFile decrypts one ciphertext source to its sibling plaintext path.
 func decryptFile(ctx context.Context, rootDir *os.Root, rel string, identities []age.Identity) fileStatus {
 	if ctx.Err() != nil {
 		slog.Debug("skipping file due to context cancellation", "file", rel, "error", ctx.Err())
@@ -221,12 +191,7 @@ func decryptFile(ctx context.Context, rootDir *os.Root, rel string, identities [
 	}
 	defer func() { _ = f.Close() }()
 
-	// Classify by the first bytes BEFORE reading the whole file, so an
-	// oversized non-age file is recognised from its header alone and never
-	// read in full. Unlike v2's in-place walk (where any file might be a
-	// legitimate plaintext), a .enc source that is NOT age ciphertext is a
-	// broken workflow — encrypt-side error or corruption — and silently
-	// copying it through would hide that, so it fails the pass.
+	// Reject non-age .enc sources before reading the full file.
 	header, err := readHeader(f)
 	if err != nil {
 		slog.Warn("read error", "file", rel, "error", err)
@@ -657,24 +622,7 @@ func matchesAnyExt(name string, extensions []string) bool {
 	return false
 }
 
-// decryptAll walks root, decrypting every matching .enc source to its
-// plaintext sibling. When extensions is non-empty, a source is a candidate
-// when its OUTPUT name (source minus .enc) matches one of the suffixes, and
-// every non-.enc file matching a suffix is additionally sniffed for stray age
-// ciphertext (an un-migrated secret at the plaintext path fails the pass
-// rather than silently leaving ciphertext where the deploy reads). When
-// extensions is empty, all .enc files are candidates and non-.enc files are
-// ignored. It also sweeps stale orphaned decrypt temps in the strict random
-// v3 or legacy PID/counter namespaces. Returns per-outcome counts and an error
-// only when the root itself cannot be opened.
-// treeWalk carries the mutable accounting for a single decryptAll pass so the
-// per-entry visitor can be a named method (treeWalk.visit) rather than a
-// deeply nested closure — the closure nesting was what pushed decryptAll's
-// cognitive complexity past the ceiling even though each branch is simple.
-//
-// Pointer-bearing fields are grouped first to satisfy govet's fieldalignment
-// (it keeps the GC pointer-scan range minimal); the layout is otherwise
-// immaterial since decryptAll builds the value with keyed fields.
+// treeWalk holds accounting for one decryptAll pass.
 type treeWalk struct {
 	ctx            context.Context
 	rootWalkErr    error
@@ -766,15 +714,7 @@ func (w *treeWalk) visit(path string, d fs.DirEntry, walkErr error) error {
 	return nil
 }
 
-// checkStray classifies a non-.enc file that matches the --ext filter. The
-// deploy reads plaintext at exactly this path, so age ciphertext here is an
-// un-migrated or misnamed secret: the pass cannot make its plaintext available
-// (only .enc sources are decrypted), and proceeding would let the deploy read
-// ciphertext. That is the same silent-no-op hazard the fatal root-walk error
-// blocks, so it fails the pass loudly. A plaintext file is the expected state
-// (a generated output from a previous pass, or a committed plaintext config)
-// and counts as skipped; an unreadable file cannot be classified and fails
-// closed.
+// checkStray fails when an output path holds ciphertext instead of plaintext.
 func (w *treeWalk) checkStray(rel string) {
 	// Lexical walks visit "x.env" before "x.env.enc". If a valid regular
 	// sibling source exists, let that source's own decrypt result gate the pass

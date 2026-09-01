@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// TestParseConfig exercises the os.Args mode selection plus the two
-// env-var reads (IDENTITY_PATH required, REPO_ROOT default /repo).
+// TestParseConfig exercises mode selection and the two env-var reads
+// (IDENTITY_PATH required, REPO_ROOT default /repo).
 func TestParseConfig(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -154,11 +154,10 @@ func TestParseConfig_extDotPrefix(t *testing.T) {
 	}
 }
 
+// A trailing "--ext" with no following value must error rather than index
+// past args.
 func TestParseConfig_extRequiresValue(t *testing.T) {
 	t.Setenv("IDENTITY_PATH", "/tmp/fake.key")
-	// A trailing "--ext" with no following value must error rather than index
-	// past args. Exercises the bounds check so a mutated guard (which would
-	// instead panic on out-of-range access or mis-parse) is caught.
 	os.Args = []string{"age", "decrypt", "--ext"}
 	if _, err := parseConfig(); err == nil || !strings.Contains(err.Error(), "requires a value") {
 		t.Errorf("parseConfig([--ext]) = err %v, want one containing 'requires a value'", err)
@@ -192,13 +191,9 @@ func TestParseConfig_rejectsUnknownFlags(t *testing.T) {
 	}
 }
 
-// TestParseConfig_extRejectsEmptyValue asserts that an empty --ext value is
-// rejected rather than silently coerced to the bare "." suffix. That suffix
-// matches almost no files, so the decrypt pass would no-op yet still exit 0 --
-// defeating the deploy gate that keys on the exit code. Both the equals form
-// ("--ext=") and the space form with an explicit empty argument (`--ext ""`)
-// route through normalizeExt and must error. Complements
-// TestParseConfig_extRequiresValue, which covers only the trailing bare --ext.
+// An empty --ext value is rejected rather than coerced to the bare "."
+// suffix, which would match almost no files and let the pass no-op with exit
+// 0 — defeating the deploy gate.
 func TestParseConfig_extRejectsEmptyValue(t *testing.T) {
 	t.Setenv("IDENTITY_PATH", "/tmp/fake.key")
 	tests := []struct {
@@ -219,11 +214,8 @@ func TestParseConfig_extRejectsEmptyValue(t *testing.T) {
 	}
 }
 
-// TestParseConfig_extRejectsEncSuffix pins the v3 filter contract: --ext
-// names the decrypted OUTPUT suffix, so a value ending in .enc (which would
-// select .enc.enc sources and silently match nothing) is rejected with a
-// pointer to the correct form. The bare ".enc" gets the redundancy message
-// instead.
+// --ext names the decrypted OUTPUT suffix, so a value ending in .enc (which
+// would select .enc.enc sources and match nothing) is rejected.
 func TestParseConfig_extRejectsEncSuffix(t *testing.T) {
 	t.Setenv("IDENTITY_PATH", "/tmp/fake.key")
 	origArgs := os.Args

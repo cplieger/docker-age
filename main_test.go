@@ -16,12 +16,6 @@ import (
 	"github.com/cplieger/slogx/capture"
 )
 
-// Tests for main.go's dispatch and reporting layer: the single-file entry
-// point (decryptSingleFile), the decrypt orchestrator (runDecrypt) across its
-// pipe / target / walk modes and deploy-gate exit codes, the idle server
-// (runServer), and the reporting helpers (logDecryptResult,
-// warnIfNoFilesSeen). Shared builders live in helpers_test.go.
-
 // --- decryptSingleFile ---
 
 func TestDecryptSingleFile_writes_sibling(t *testing.T) {
@@ -57,9 +51,8 @@ func TestDecryptSingleFile_writes_sibling(t *testing.T) {
 	assertSourcePreserved(t, srcPath, buf.Bytes())
 }
 
-// A named .enc source holding plaintext is a broken workflow: fileFailed (the
-// v2 "legitimate skip" for non-age named files does not survive the flip —
-// only .enc sources may be named, and a .enc source must be ciphertext).
+// A named .enc source holding plaintext is a broken workflow, not a skip: a
+// .enc source must be ciphertext.
 func TestDecryptSingleFile_plaintext_enc_fails(t *testing.T) {
 	tmpDir := t.TempDir()
 	srcPath := filepath.Join(tmpDir, "plain.env"+encSuffix)
@@ -75,10 +68,8 @@ func TestDecryptSingleFile_plaintext_enc_fails(t *testing.T) {
 	assertNoOutput(t, filepath.Join(tmpDir, "plain.env"))
 }
 
-// TestDecryptSingleFile_parent_not_a_directory_returns_failed covers
-// decryptSingleFile's os.OpenRoot-failure branch: naming a target whose parent
-// path component is a regular file makes OpenRoot fail (ENOTDIR), and the
-// function must fail the file gracefully rather than panic.
+// A target whose parent path component is a regular file makes OpenRoot fail
+// (ENOTDIR); decryptSingleFile must fail the file gracefully, not panic.
 func TestDecryptSingleFile_parent_not_a_directory_returns_failed(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -99,7 +90,6 @@ func TestDecryptSingleFile_parent_not_a_directory_returns_failed(t *testing.T) {
 func TestRunDecrypt_bareDecryptErrors(t *testing.T) {
 	identity, _ := age.GenerateX25519Identity()
 
-	// No targets, no extensions = must error (not silently decrypt everything)
 	cfg := &config{RepoRoot: t.TempDir()}
 	code := runDecrypt(t.Context(), cfg, []age.Identity{identity})
 	if code != 1 {
@@ -124,13 +114,11 @@ func TestRunDecrypt_withExtWalksTree(t *testing.T) {
 		t.Fatalf("runDecrypt = %d, want 0", code)
 	}
 
-	// .env.enc decrypted to the .env sibling.
 	got, _ := os.ReadFile(outEnv)
 	if string(got) != "SECRET=value\n" {
 		t.Errorf(".env output = %q, want decrypted", got)
 	}
 
-	// .yaml.enc untouched, no .yaml output.
 	assertSourcePreserved(t, srcYaml, yamlBefore)
 	assertNoOutput(t, outYaml)
 	_ = srcEnv
@@ -142,7 +130,6 @@ func TestRunDecrypt_withTargetNoExtDecryptsAll(t *testing.T) {
 
 	_, out := writeEncSource(t, tmpDir, "config.yaml", []byte("key: value\n"), identity.Recipient())
 
-	// Explicit dir target: all .enc sources are candidates (no --ext needed).
 	cfg := &config{RepoRoot: t.TempDir(), Targets: []string{tmpDir}}
 	code := runDecrypt(t.Context(), cfg, []age.Identity{identity})
 	if code != 0 {
@@ -172,7 +159,6 @@ func TestRunSubcommand_returns_one_on_decrypt_failure(t *testing.T) {
 	decryptID := newIdentity(t)
 	tmpDir := t.TempDir()
 
-	// Encrypt with one key, decrypt with another — produces Failed > 0.
 	writeEncSource(t, tmpDir, "secret.env", []byte("S=v\n"), encryptID.Recipient())
 
 	code := runDecrypt(t.Context(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{decryptID})
@@ -191,8 +177,8 @@ func TestRunSubcommand_returns_one_on_invalid_root(t *testing.T) {
 	}
 }
 
-// A stray ciphertext file at a plaintext path (un-migrated secret) must block
-// the deploy: the pass exits 1 even though every .enc source decrypted fine.
+// A stray ciphertext at a plaintext path (an un-migrated secret) must block
+// the deploy even though every .enc source decrypted fine.
 func TestRunDecrypt_stray_ciphertext_blocks_deploy(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -207,8 +193,8 @@ func TestRunDecrypt_stray_ciphertext_blocks_deploy(t *testing.T) {
 }
 
 // An explicit file target that does not name a .enc source is a fatal caller
-// error (exit 1): under the sibling-output model the tool never writes a
-// plaintext path directly.
+// error: under the sibling-output model the tool never writes a plaintext
+// path directly.
 func TestRunDecrypt_singleFileTarget_nonEnc_exits_one(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -231,8 +217,6 @@ func TestRunDecrypt_singleFileTarget_nonEnc_exits_one(t *testing.T) {
 	}
 }
 
-// A named .enc source that cannot be decrypted (wrong key) must count Failed
-// and exit 1.
 func TestRunDecrypt_singleFileTarget_wrongKey_exits_one(t *testing.T) {
 	encryptID := newIdentity(t)
 	decryptID := newIdentity(t)
@@ -245,8 +229,6 @@ func TestRunDecrypt_singleFileTarget_wrongKey_exits_one(t *testing.T) {
 	}
 }
 
-// A named .enc source decrypts to its sibling and exits 0 — the scripted
-// single-file path.
 func TestRunDecrypt_singleFileTarget_success(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -265,12 +247,9 @@ func TestRunDecrypt_singleFileTarget_success(t *testing.T) {
 	}
 }
 
-// TestRunDecrypt_dirTarget_openRoot_failure_exits_one pins the deploy-gate
-// fidelity contract: when decryptAll returns a fatal error for a directory
-// target (the documented "repo root unreadable" stale-mount case, or any
-// os.OpenRoot failure), runDecrypt must propagate exit 1. A directory chmod'd
-// to 0o000 is the deterministic trigger: os.Stat succeeds and reports IsDir,
-// then decryptAll's os.OpenRoot fails with EACCES.
+// A directory chmod'd to 0o000 pins the deploy-gate fidelity contract: when
+// decryptAll returns a fatal error for a directory target, runDecrypt must
+// propagate exit 1.
 func TestRunDecrypt_dirTarget_openRoot_failure_exits_one(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows: directory permissions unreliable")
@@ -297,11 +276,9 @@ func TestRunDecrypt_dirTarget_openRoot_failure_exits_one(t *testing.T) {
 	}
 }
 
-// TestRunDecrypt_walkError_blocks_deploy pins the fail-closed exit gate: a
-// subtree the walk cannot read (WalkErrors > 0) must block the deploy (exit 1)
-// even when every source the walk DID reach decrypted cleanly (Failed == 0).
-// An unread subtree leaves its secrets undecrypted — the same silent-no-op
-// hazard the fatal root-level walk error prevents, one level down.
+// A subtree the walk cannot read (WalkErrors > 0) must block the deploy even
+// when every source the walk DID reach decrypted cleanly — an unread subtree
+// leaves its secrets undecrypted.
 func TestRunDecrypt_walkError_blocks_deploy(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows: permission-based walk errors unreliable")
@@ -313,11 +290,10 @@ func TestRunDecrypt_walkError_blocks_deploy(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
-	// A top-level source that decrypts cleanly: Decrypted=1, Failed=0.
+	// A top-level source that decrypts cleanly.
 	writeEncSource(t, tmpDir, "app.env", []byte("OK=1\n"), identity.Recipient())
 
-	// An unreadable subtree (WalkErrors>0) hiding a source that is therefore
-	// never decrypted: the missing-plaintext hazard.
+	// An unreadable subtree hiding a source that is therefore never decrypted.
 	noReadDir := filepath.Join(tmpDir, "locked")
 	if err := os.MkdirAll(noReadDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -334,9 +310,8 @@ func TestRunDecrypt_walkError_blocks_deploy(t *testing.T) {
 	}
 }
 
-// TestRunDecrypt_canceled_context_exits_one pins the wired cancellation on the
-// single-file path: a canceled context (SIGINT/SIGTERM) must make runDecrypt
-// exit non-zero rather than report the interrupted file as a skip and exit 0.
+// A canceled context must make runDecrypt exit non-zero on the single-file
+// path, rather than report the interrupted file as a skip and exit 0.
 func TestRunDecrypt_canceled_context_exits_one(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -353,10 +328,9 @@ func TestRunDecrypt_canceled_context_exits_one(t *testing.T) {
 
 // --- run (dispatch + key-load gate) ---
 
-// TestRun_decryptMode covers run()'s decrypt-mode dispatch and its
-// loadIdentities-failure gate. run() installs its own signal context, so only
-// the non-blocking decrypt path is exercised here; the server path blocks on
-// that context by design and is covered via runServer directly.
+// run() installs its own signal context, so only the non-blocking decrypt
+// path is exercised here; the server path blocks by design and is covered
+// via runServer directly.
 func TestRun_decryptMode(t *testing.T) {
 	t.Run("unreadable key file blocks the deploy", func(t *testing.T) {
 		cfg := &config{Mode: modeDecrypt, KeyFile: filepath.Join(t.TempDir(), "missing.key")}
@@ -374,7 +348,7 @@ func TestRun_decryptMode(t *testing.T) {
 		cfg := &config{
 			Mode:       modeDecrypt,
 			KeyFile:    keyPath,
-			RepoRoot:   t.TempDir(), // empty tree: nothing to decrypt, no failures
+			RepoRoot:   t.TempDir(),
 			Extensions: []string{".env"},
 		}
 		if code := run(cfg); code != 0 {
@@ -387,7 +361,7 @@ func TestRun_decryptMode(t *testing.T) {
 
 func TestRunServer_exits_zero_on_signal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // immediate signal
+	cancel()
 	code := runServer(ctx)
 	if code != 0 {
 		t.Errorf("runServer(canceled ctx) = %d, want 0", code)
@@ -463,8 +437,7 @@ func TestWarnIfNoFilesSeen_warns_only_when_no_files_seen(t *testing.T) {
 }
 
 // An explicit FIFO ending in .enc must be rejected without waiting for a
-// writer. This pins both the Lstat gate and the nonblocking no-follow open used
-// as defense in depth by decryptFile.
+// writer, pinning both the Lstat gate and the nonblocking no-follow open.
 func TestRunDecrypt_explicit_fifo_fails_without_blocking(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows: FIFOs are unavailable")
@@ -489,8 +462,7 @@ func TestRunDecrypt_explicit_fifo_fails_without_blocking(t *testing.T) {
 	}
 }
 
-// --ext applies to explicit files exactly as it does to walks: derive the
-// output name, then skip a source whose output suffix is out of scope.
+// --ext applies to explicit files exactly as it does to walks.
 func TestRunDecrypt_explicit_file_respects_ext_filter(t *testing.T) {
 	identity := newIdentity(t)
 	dir := t.TempDir()

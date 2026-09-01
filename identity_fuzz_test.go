@@ -10,9 +10,8 @@ import (
 )
 
 // FuzzLoadIdentity feeds arbitrary bytes as key file content to loadIdentity
-// and asserts no panic. This exercises the parsing boundary for untrusted input.
+// and asserts no panic.
 func FuzzLoadIdentity(f *testing.F) {
-	// Seed corpus with representative inputs.
 	id, _ := age.GenerateX25519Identity()
 	f.Add([]byte(id.String() + "\n"))
 	f.Add([]byte("# comment\n" + id.String() + "\n"))
@@ -27,7 +26,6 @@ func FuzzLoadIdentity(f *testing.F) {
 			t.Fatalf("write: %v", err)
 		}
 		ids, err := loadIdentities(keyPath)
-		// Invariant 1: error and result are mutually exclusive.
 		if err != nil {
 			if ids != nil {
 				t.Errorf("loadIdentities returned %d identities alongside error %v, want nil",
@@ -36,9 +34,9 @@ func FuzzLoadIdentity(f *testing.F) {
 			return
 		}
 
-		// Invariant 2: documented success contract -- nil error guarantees at
-		// least one identity and none of them is nil (forwarded verbatim to
-		// variadic age.Decrypt).
+		// Documented success contract: nil error guarantees at least one
+		// identity and none of them is nil (forwarded verbatim to variadic
+		// age.Decrypt).
 		if len(ids) == 0 {
 			t.Errorf("loadIdentities returned nil error but zero identities for input %q", data)
 		}
@@ -48,8 +46,8 @@ func FuzzLoadIdentity(f *testing.F) {
 			}
 		}
 
-		// Invariant 3: the 1 MB key-file size cap is honored -- an input larger
-		// than the cap must never parse successfully.
+		// The 1 MB key-file size cap: an input larger than the cap must never
+		// parse successfully.
 		const maxKeyFileSize = 1 << 20
 		if len(data) > maxKeyFileSize {
 			t.Errorf("loadIdentities accepted an oversized %d-byte key file (cap %d)",

@@ -16,16 +16,15 @@ import (
 	"github.com/cplieger/slogx/capture"
 )
 
-// Tests for the atomic-write temp-file lifecycle in decrypt.go:
-// exclusive random temp creation, descriptor-owned cleanup, and the
-// age-bound orphan sweep. These pin the security-critical "never truncate a
-// pre-existing inode and leave no plaintext debris" guarantees.
+// Tests for the atomic-write temp-file lifecycle in decrypt.go: exclusive
+// random temp creation, descriptor-owned cleanup, and the age-bound orphan
+// sweep — the "never truncate a pre-existing inode, leave no plaintext
+// debris" guarantees.
 
 // TestWriteDecryptedSibling_rename_failure_leaves_no_plaintext_debris pins the
-// cleanup contract: when the rename step fails, the function must return
-// fileFailed AND remove or zero the 0600 plaintext temp so no decrypted secret
-// lingers on disk. A deterministic rename failure is forced by making the
-// directory: renaming a file onto a directory fails (EISDIR).
+// cleanup contract: when rename fails, the function must return fileFailed
+// and remove or zero the 0600 plaintext temp. Forced deterministically by
+// renaming a file onto a directory (EISDIR).
 func TestWriteDecryptedSibling_rename_failure_leaves_no_plaintext_debris(t *testing.T) {
 	// Not parallel: capture.Default swaps the global slog default.
 	rec := capture.Default(t)
@@ -46,8 +45,8 @@ func TestWriteDecryptedSibling_rename_failure_leaves_no_plaintext_debris(t *test
 		t.Errorf("writeDecryptedSibling(rename onto dir) = %d, want %d (fileFailed)", got, fileFailed)
 	}
 
-	// Security invariant: a failed sibling write must leave no 0600 plaintext
-	// temp debris behind (any name carrying the tmpSuffix marker).
+	// Security invariant: a failed sibling write must leave no plaintext temp
+	// debris behind.
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
 		t.Fatalf("readdir: %v", err)
@@ -58,10 +57,9 @@ func TestWriteDecryptedSibling_rename_failure_leaves_no_plaintext_debris(t *test
 		}
 	}
 
-	// The publish failure is reported once, and the wipe that followed it is
-	// reported not at all: an operator reading a failed deploy must be able to
-	// take "temp cleanup error" as evidence that decrypted bytes really were
-	// left behind, which a line emitted on every successful wipe would destroy.
+	// The publish failure is reported once; the wipe that followed it is
+	// reported not at all, so a "temp cleanup error" line reliably means the
+	// wipe itself failed and decrypted bytes were left behind.
 	if got := rec.CountExact("rename error"); got != 1 {
 		t.Errorf("rename-error records = %d, want 1 (messages=%v)", got, rec.Messages())
 	}
@@ -71,12 +69,9 @@ func TestWriteDecryptedSibling_rename_failure_leaves_no_plaintext_debris(t *test
 }
 
 // TestWriteDecryptedSibling_canceled_before_rename_skips_and_leaves_no_output
-// pins the pre-rename cancellation guard: when the context is already canceled
-// by the time the temp is ready to publish, the function must return
-// fileSkipped, publish no sibling, and leave no plaintext temp debris — so a
-// deploy interrupted mid-pass never leaves a decrypted secret behind its
-// non-zero exit. Complements the stdin-path cancellation regression in
-// decrypt_stdin_test.go.
+// pins the pre-rename cancellation guard: if the context is already canceled
+// by publish time, the function must return fileSkipped, publish no sibling,
+// and leave no plaintext temp debris.
 func TestWriteDecryptedSibling_canceled_before_rename_skips_and_leaves_no_output(t *testing.T) {
 	tmpDir := t.TempDir()
 	rootDir, err := os.OpenRoot(tmpDir)
@@ -86,7 +81,7 @@ func TestWriteDecryptedSibling_canceled_before_rename_skips_and_leaves_no_output
 	defer func() { _ = rootDir.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // canceled before the publish decision
+	cancel()
 
 	got := writeDecryptedSibling(ctx, rootDir, "app.env"+encSuffix, "app.env", []byte("SECRET=plaintext\n"))
 	if got != fileSkipped {
@@ -207,8 +202,8 @@ func TestOpenExclusiveTemp_refuses_preexisting_inodes(t *testing.T) {
 	}
 }
 
-// A generic suffix match is too broad for a cleanup routine. Only the random
-// v3 grammar and strict legacy PID/counter grammar are reserved and sweepable.
+// A generic suffix match is too broad for a cleanup routine: only the random
+// grammar and strict legacy PID/counter grammar are reserved and sweepable.
 func TestIsOrphanTmpFile_strict_namespace(t *testing.T) {
 	tests := map[string]bool{
 		"app.env.0123456789abcdef0123456789abcdef" + tmpSuffix: true,
@@ -227,14 +222,10 @@ func TestIsOrphanTmpFile_strict_namespace(t *testing.T) {
 	}
 }
 
-// TestSweepOrphanTmpFile_returns_false_when_remove_fails pins the remove-failure
-// branch (decrypt.go:178-182): a stale orphan whose unlink fails for a reason
-// other than fs.ErrNotExist (here an unwritable parent dir -> EACCES) must be
-// logged and reported as not-swept (return false), with the file left in place.
-// Existing sweep tests cover stat-miss, young-preserved, and successful removal
-// but never a removable-stale-that-fails-to-unlink. Windows + root are skipped:
-// chmod cannot revoke write for either, matching the existing chmod-based tests
-// in this file.
+// TestSweepOrphanTmpFile_returns_false_when_remove_fails pins the
+// remove-failure branch: a stale orphan whose unlink fails for a reason other
+// than fs.ErrNotExist (here an unwritable parent dir → EACCES) must be logged
+// and reported as not-swept, leaving the file in place.
 func TestSweepOrphanTmpFile_returns_false_when_remove_fails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows: chmod on directories unreliable")
@@ -253,7 +244,7 @@ func TestSweepOrphanTmpFile_returns_false_when_remove_fails(t *testing.T) {
 	if err := os.Chtimes(p, old, old); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
-	// Make the parent unwritable so the unlink fails with EACCES (not ErrNotExist).
+	// Make the parent unwritable so the unlink fails with EACCES.
 	if err := os.Chmod(tmpDir, 0o555); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
@@ -275,11 +266,8 @@ func TestSweepOrphanTmpFile_returns_false_when_remove_fails(t *testing.T) {
 	}
 }
 
-// sweepOrphanTmpFile returns true only after it has actually removed a stale
-// tmp file: the success path runs when `rmErr != nil` is false. Mutating that
-// guard to `rmErr == nil` (CONDITIONALS_NEGATION) makes a successful removal
-// report failure (return false) — the file still gets removed, so only the
-// return value distinguishes the mutant.
+// sweepOrphanTmpFile returns true only after actually removing a stale tmp
+// file.
 //
 // given a stale, removable orphan tmp file
 // when sweepOrphanTmpFile runs
@@ -312,10 +300,9 @@ func TestSweepOrphanTmpFile_returns_true_when_stale_file_removed(t *testing.T) {
 	}
 }
 
-// newPlaintextTemp creates a real v3 plaintext temp holding cleartext and
-// returns its relative name, the owning descriptor, and the fstat that
-// identifies the inode. It exists so the three mode/cleanup tests below drive
-// the actual publish primitives rather than a synthesized os.FileInfo.
+// newPlaintextTemp creates a real plaintext temp holding cleartext and
+// returns its relative name, owning descriptor, and fstat, so the tests below
+// drive the actual publish primitives rather than a synthesized os.FileInfo.
 func newPlaintextTemp(t *testing.T, rootDir *os.Root, outRel string, cleartext []byte) (string, *os.File, os.FileInfo) {
 	t.Helper()
 	tmpName, temp, err := createTempFile(rootDir, outRel)
@@ -334,19 +321,13 @@ func newPlaintextTemp(t *testing.T, rootDir *os.Root, outRel string, cleartext [
 }
 
 // TestValidateTempFile_refuses_a_mode_the_filesystem_widened pins that the
-// publish path VERIFIES the stored mode rather than trusting the one it asked
-// for. temp.Chmod(0600) is fchmod(2), and a mode argument is a request, not a
-// result: on a filesystem carrying an inheritable group-write ACL (measured on
-// a ZFS nfs4acl dataset) the kernel stores 0660 and fchmod still reports
-// success. validateTempFile's exact-0600 comparison is the only thing standing
-// between that and renaming group-readable decrypted secrets into place while
-// logging "decrypted" — every other check here (regular, single-link) passes on
-// a 0660 file.
-//
-// The drift is driven for real, by widening the inode through its own
-// descriptor, and then witnessed by re-stat'ing it: a filesystem that declined
-// to store 0660 makes this test INVALID rather than passing vacuously, since
-// validateTempFile would be refusing a mode nothing had produced.
+// publish path verifies the STORED mode rather than trusting the requested
+// one: temp.Chmod(0600) is a request, and a filesystem carrying an
+// inheritable group-write ACL (measured on a ZFS nfs4acl dataset) can store
+// 0660 while fchmod still reports success. The drift is driven for real by
+// widening the inode through its own descriptor, then witnessed by re-stat.
+// A filesystem that declines to store 0660 skips the test as invalid rather
+// than passing vacuously.
 //
 // given a plaintext temp whose stored mode is really 0660
 // when validateTempFile inspects the fstat of that descriptor
@@ -368,7 +349,6 @@ func TestValidateTempFile_refuses_a_mode_the_filesystem_widened(t *testing.T) {
 		t.Fatalf("temp created with mode %04o, want 0600 before the widening", perm)
 	}
 
-	// Stand in for the filesystem storing more than fchmod asked for.
 	if chmodErr := temp.Chmod(0o660); chmodErr != nil {
 		t.Fatalf("widen temp mode: %v", chmodErr)
 	}
@@ -390,13 +370,12 @@ func TestValidateTempFile_refuses_a_mode_the_filesystem_widened(t *testing.T) {
 }
 
 // TestRevalidateTempBeforeRename_refuses_a_widened_mode pins the same
-// verification at the second place the publish path performs it: after the temp
-// is closed and immediately before the rename. The check must read the mode
-// CURRENTLY on the inode, not the one captured in `expected` when the
-// descriptor was still open — a mode widened in that window (an ACL applied to
-// the tree mid-pass, a neighbour's chmod) would otherwise be published as a
-// group-readable plaintext sibling. The inode is unchanged, so os.SameFile
-// still matches and the mode comparison is the only thing that can refuse.
+// verification at the second place the publish path performs it: right
+// before the rename, after the temp is closed. The check must read the mode
+// CURRENTLY on the inode, not the one captured when the descriptor was still
+// open — a mode widened in that window would otherwise be published as
+// group-readable plaintext. The inode is unchanged, so os.SameFile still
+// matches and the mode comparison is the only thing that can refuse.
 //
 // given an owned temp whose mode was widened to 0660 after its owning fstat
 // when revalidateTempBeforeRename re-checks it
@@ -441,18 +420,11 @@ func TestRevalidateTempBeforeRename_refuses_a_widened_mode(t *testing.T) {
 }
 
 // TestWipeOwnedTempFile_zeroes_the_cleartext_it_unlinks pins what happens to
-// the decrypted bytes when any pre-rename check refuses — an unsafe mode, a
-// failed sync, a lost inode. writeDecryptedSibling's deferred cleanup runs
-// wipeOwnedTempFile on every non-committed exit, and unlinking alone is not
-// enough: the name is gone but the blocks survive for anything still holding
-// the inode. The wipe must truncate as well as unlink.
-//
-// Absence of the name is already covered end-to-end by the rename-failure test
-// above; what is untested is the zeroing, which needs a second descriptor
-// opened on the same inode BEFORE the wipe — that fd is how the test reads the
-// inode after its directory entry is gone. It is asserted to see the cleartext
-// first, so an empty read afterwards cannot come from a fixture that never
-// wrote anything.
+// decrypted bytes when a pre-rename check refuses: unlinking alone is not
+// enough, since the name is gone but the blocks survive for anything still
+// holding the inode. The wipe must truncate as well as unlink. A second
+// descriptor opened on the same inode before the wipe is how the test reads
+// the inode after its directory entry is gone.
 //
 // given an owned plaintext temp and a witness descriptor on the same inode
 // when wipeOwnedTempFile runs
@@ -502,15 +474,10 @@ func TestWipeOwnedTempFile_zeroes_the_cleartext_it_unlinks(t *testing.T) {
 }
 
 // TestWipeOwnedTempFile_wipes_a_temp_it_was_given_no_fstat_for covers the
-// cleanup shape the EARLY failures produce. writeDecryptedSibling captures the
-// owning fstat only after the sync, so a write, chmod or sync error runs the
-// deferred wipe with a still-open descriptor and no `expected` inode at all —
-// and that is exactly the run that has decrypted plaintext sitting in a file it
-// must not leave behind. The wipe has to fall back to the descriptor's own stat
-// there; without it, every path check downstream has nothing to compare against
-// and refuses to touch the temp, stranding the cleartext on disk.
-//
-// The sibling test above supplies the fstat, so it exercises the other half.
+// cleanup shape an early failure produces: writeDecryptedSibling captures the
+// owning fstat only after the sync, so a write, chmod, or sync error runs the
+// deferred wipe with a still-open descriptor and no `expected` inode at all.
+// The wipe has to fall back to the descriptor's own stat there.
 //
 // given an owned plaintext temp, a witness descriptor on its inode, and no
 // expected fstat
@@ -560,13 +527,10 @@ func TestWipeOwnedTempFile_wipes_a_temp_it_was_given_no_fstat_for(t *testing.T) 
 	}
 }
 
-// TestWriteAll_reports_the_failure_the_descriptor_gave pins that the plaintext
-// writer surfaces the real cause. In production the cause is a full or quota'd
-// filesystem, and it reaches the operator only as the `error` attr of the
-// "write error" line; substituting a generic short-write sentinel there would
-// send them looking for a corrupt secret instead of a full disk. A closed
-// descriptor stands in for the unwritable one: it is the one write failure a
-// test can force without a filesystem that can fail.
+// TestWriteAll_reports_the_failure_the_descriptor_gave pins that the
+// plaintext writer surfaces the real cause (typically a full or quota'd
+// filesystem in production) rather than a generic short-write sentinel. A
+// closed descriptor stands in for the unwritable one.
 //
 // given a descriptor that cannot accept bytes
 // when writeAll writes to it

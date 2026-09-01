@@ -12,10 +12,7 @@ import (
 	"pgregory.net/rapid"
 )
 
-// Property-based tests (pgregory.net/rapid) for the decrypt paths: encrypt →
-// decrypt round-trips into the plaintext sibling (armored and binary), source
-// preservation, resilient walk over mixed valid / invalid sources, the
-// decompression-bomb output cap, and the plaintext-output no-op.
+// Property-based tests (pgregory.net/rapid) for the decrypt paths.
 
 // drawEnvContent draws random .env-shaped plaintext.
 func drawEnvContent(rt *rapid.T, maxPairs int) []byte {
@@ -30,7 +27,7 @@ func drawEnvContent(rt *rapid.T, maxPairs int) []byte {
 }
 
 // Property 1: Armored encrypt → decrypt produces identical bytes at the
-// sibling output, and the ciphertext source survives byte-for-byte.
+// sibling output, and the source survives byte-for-byte.
 func TestProperty_ArmoredRoundTrip(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		identity, err := age.GenerateX25519Identity()
@@ -192,8 +189,8 @@ func TestProperty_ResilientWalk(t *testing.T) {
 			case "binary":
 				data = rapid.SliceOfN(rapid.Byte(), 10, 200).Draw(rt, fmt.Sprintf("garbage_%d", i))
 			}
-			// Guard against rapid drawing bytes that happen to start with a
-			// real age header (astronomically unlikely; cheap to exclude).
+			// Guard against rapid drawing bytes that start with a real age
+			// header.
 			if detectAgeFormat(data) != notAgeFormat {
 				data = append([]byte("x"), data...)
 			}
@@ -241,12 +238,12 @@ func TestProperty_ResilientWalk(t *testing.T) {
 }
 
 // Property 4: Oversized decrypted content is rejected (decompression bomb
-// guard) — no output sibling, source preserved.
+// guard).
 func TestProperty_OversizedDecryptedContent(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
-	// A 2 MB plaintext (exceeds the 1 MB output limit).
+	// A 2 MB plaintext exceeds the 1 MB output limit.
 	bigContent := bytes.Repeat([]byte("A"), 2<<20)
 	encrypted, err := encryptArmored(bigContent, identity.Recipient())
 	if err != nil {

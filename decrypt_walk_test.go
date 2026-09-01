@@ -18,10 +18,10 @@ import (
 )
 
 // Tests for decryptAll, the directory-walk orchestration: per-outcome
-// counting (decrypted/failed/skipped/walk_errors), candidate selection by the
-// .enc suffix, the --ext output-name filter, the stray-ciphertext guard, the
-// in-walk orphan-tmp sweep, symlink containment, multi-identity rotation, and
-// context cancellation. The single-file decrypt path lives in decrypt_test.go.
+// counting, candidate selection by the .enc suffix, the --ext output-name
+// filter, the stray-ciphertext guard, the in-walk orphan-tmp sweep, symlink
+// containment, multi-identity rotation, and context cancellation. The
+// single-file decrypt path is in decrypt_test.go.
 
 func TestDecryptAllEmptyDirectory(t *testing.T) {
 	identity := newIdentity(t)
@@ -31,10 +31,9 @@ func TestDecryptAllEmptyDirectory(t *testing.T) {
 	}
 }
 
-// Bare mode (no --ext) considers only .enc files: non-.enc files are out of
-// scope even when their content is age ciphertext (a deliberately-encrypted
-// archive kept at rest must not fail the pass — the stray guard applies only
-// under an explicit --ext intent).
+// Bare mode (no --ext) considers only .enc files: age ciphertext at a
+// non-.enc path is out of scope, since the stray guard applies only under an
+// explicit --ext intent.
 func TestDecryptAll_bare_mode_ignores_non_enc_files(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -75,8 +74,8 @@ func TestDecryptAllSymlinkOutsideRoot(t *testing.T) {
 	outsideSrc := filepath.Join(outsideDir, "stolen.env"+encSuffix)
 	_ = os.WriteFile(outsideSrc, encrypted, 0o644)
 
-	// A symlink inside the repo pointing outside is classified as a matching
-	// non-regular source and fails closed; it is never followed.
+	// A symlink inside the repo pointing outside must fail closed and never be
+	// followed.
 	symlink := filepath.Join(repoDir, "escape.env"+encSuffix)
 	if err := os.Symlink(outsideSrc, symlink); err != nil {
 		t.Fatalf("symlink: %v", err)
@@ -100,11 +99,10 @@ func TestDecryptAllSymlinkOutsideRoot(t *testing.T) {
 	assertSourcePreserved(t, outsideSrc, encrypted)
 }
 
-// A symlink sitting at the OUTPUT path must not let the rename write through
-// to the link target: rename(2) replaces the link itself with the plaintext
-// regular file, and the linked-to file outside the root stays untouched. This
-// is the v3-specific escape vector (v2 wrote over its candidate; v3 writes a
-// derived output path that an attacker-shaped tree could pre-seed).
+// A symlink at the OUTPUT path must not let the rename write through to the
+// link target: rename(2) replaces the link itself, leaving the linked-to file
+// outside the root untouched. v2 wrote over its candidate directly; v3 writes
+// a derived output path an attacker-shaped tree could pre-seed.
 func TestDecryptAll_output_symlink_is_replaced_not_followed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows: symlinks require elevated privileges")
@@ -121,7 +119,6 @@ func TestDecryptAll_output_symlink_is_replaced_not_followed(t *testing.T) {
 
 	original := []byte("SECRET=value\n")
 	writeEncryptedEnv(t, repoDir, "app.env"+encSuffix, original, identity.Recipient())
-	// Pre-seed the output path with a symlink escaping the root.
 	if err := os.Symlink(victim, filepath.Join(repoDir, "app.env")); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
@@ -160,7 +157,7 @@ func TestDecryptAll_output_symlink_is_replaced_not_followed(t *testing.T) {
 }
 
 // Candidate selection is by the .enc suffix; sibling names that merely start
-// the same are not candidates and non-.enc names never produce output.
+// the same are not candidates.
 func TestDecryptAll_candidate_suffix_edge_cases(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -171,7 +168,7 @@ func TestDecryptAll_candidate_suffix_edge_cases(t *testing.T) {
 	_, out1 := writeEncSource(t, tmpDir, "app.env", original, identity.Recipient())
 	_, out2 := writeEncSource(t, tmpDir, ".env", original, identity.Recipient())
 
-	// Age-formatted content at non-.enc names: ignored in bare mode.
+	// Age-formatted content at non-.enc names is ignored in bare mode.
 	_ = os.WriteFile(filepath.Join(tmpDir, ".env.bak"), []byte(ageHeader+"\nfake"), 0o644)
 	_ = os.WriteFile(filepath.Join(tmpDir, "enc"), []byte(ageHeader+"\nfake"), 0o644)
 	_ = os.WriteFile(filepath.Join(tmpDir, "xenc"), []byte(ageHeader+"\nfake"), 0o644)
@@ -198,7 +195,7 @@ func TestDecryptAll_candidate_suffix_edge_cases(t *testing.T) {
 }
 
 // The --ext filter applies to the OUTPUT name: --ext .env selects .env.enc
-// sources and leaves .yaml.enc sources alone (no output created).
+// sources and leaves .yaml.enc sources alone.
 func TestDecryptAll_ext_filters_on_output_name(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -232,8 +229,8 @@ func TestDecryptAll_ext_filters_on_output_name(t *testing.T) {
 }
 
 // Under --ext, age ciphertext at a matching plaintext path (an un-migrated or
-// misnamed secret) fails the pass: the deploy would read ciphertext at exactly
-// that path, so this is deploy-blocking, and the file itself is untouched.
+// misnamed secret) fails the pass: the deploy would read ciphertext at that
+// path, and the file itself is left untouched.
 func TestDecryptAll_stray_ciphertext_fails_pass(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -265,8 +262,7 @@ func TestDecryptAll_stray_ciphertext_fails_pass(t *testing.T) {
 }
 
 // Under --ext, plaintext at a matching non-.enc path is the expected steady
-// state (the generated output of a previous pass, or a committed plaintext
-// config): counted Skipped, never Failed.
+// state: counted Skipped, never Failed.
 func TestDecryptAll_plaintext_outputs_count_skipped(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -400,10 +396,10 @@ func TestDecryptAll_fails_oversized_encrypted_source(t *testing.T) {
 	}
 	assertNoOutput(t, filepath.Join(tmpDir, "huge.env"))
 
-	// Both this guard and a failed decrypt count the same way, so the
-	// operator's only evidence for WHY the deploy stopped is the diagnostic.
-	// It must name the size refusal, and report the bytes the reader actually
-	// took in: one past the cap, never the whole file.
+	// Both this guard and a failed decrypt count the same way (one Failed), so
+	// the diagnostic is the operator's only evidence for why the deploy
+	// stopped. It must name the size refusal and report the bytes actually
+	// read: one past the cap, never the whole file.
 	if got := rec.CountExact("file exceeds max encrypted-input size, treating as failure"); got != 1 {
 		t.Errorf("size-refusal records = %d, want 1 (messages=%v)", got, rec.Messages())
 	}
@@ -423,11 +419,8 @@ func TestDecryptAll_fails_oversized_encrypted_source(t *testing.T) {
 
 // The 10 MB encrypted-input cap is inclusive: a source of exactly that many
 // bytes must reach the decrypt step rather than being turned away for size.
-// Nothing in the counts can show which guard refused — an over-cap source and
-// an undecryptable one are both one Failed — so the diagnostic is the only
-// witness, and it is what tells an operator whether to shrink the secret or
-// re-encrypt it. The payload here is padding, so the pass still fails; what is
-// pinned is that it fails at the decrypt, one guard later.
+// The payload here is padding, so the pass still fails; what is pinned is
+// that it fails at the decrypt, one guard later.
 func TestDecryptAll_source_at_the_encrypted_size_cap_reaches_the_decrypt(t *testing.T) {
 	// Not parallel: capture.Default swaps the global slog default.
 	rec := capture.Default(t)
@@ -462,11 +455,9 @@ func TestDecryptAll_source_at_the_encrypted_size_cap_reaches_the_decrypt(t *test
 }
 
 // A directory whose name ends in .enc is a candidate by name and can never be
-// one in fact. It must fail the pass rather than be skipped: the deploy reads
-// plaintext at the sibling path, and silently walking past the thing that was
-// supposed to produce it would hand the deploy a missing secret with a clean
-// exit. A valid source alongside it still decrypts — one bad candidate fails
-// the pass without stopping the walk.
+// one in fact. It must fail the pass rather than be silently skipped past —
+// that would hand the deploy a missing secret with a clean exit. A valid
+// source alongside it still decrypts.
 func TestDecryptAll_directory_named_like_a_ciphertext_source_fails_closed(t *testing.T) {
 	identity := newIdentity(t)
 	dir := t.TempDir()
@@ -548,9 +539,8 @@ func TestDecryptAll_respects_context_cancellation(t *testing.T) {
 	cancel()
 
 	result, err := decryptAll(ctx, tmpDir, []age.Identity{identity}, nil)
-	// A canceled context aborts the walk and is reported as an error so the
-	// caller (runDecrypt) exits non-zero — a pass that did not finish must
-	// never look like success to the deploy gate.
+	// A canceled context must be reported as an error so runDecrypt exits
+	// non-zero — a pass that did not finish must never look like success.
 	if err == nil {
 		t.Fatal("decryptAll(canceled ctx) = nil error, want a cancellation error")
 	}
@@ -602,8 +592,8 @@ func TestDecryptAll_handles_walk_error(t *testing.T) {
 	_ = os.Chmod(noReadDir, 0o000)
 	defer func() { _ = os.Chmod(noReadDir, 0o755) }() // restore for cleanup
 
-	// decryptAll does not return an error for a subtree failure — it logs,
-	// counts, and continues.
+	// decryptAll does not error on a subtree failure — it logs, counts, and
+	// continues.
 	count, err := decryptAllCount(tmpDir, identity)
 	if err != nil {
 		t.Fatalf("decryptAll: %v", err)
@@ -646,8 +636,7 @@ func TestDecryptAll_sweeps_orphan_tmp_files(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Orphan decrypt temp files (simulating a prior SIGKILL between WriteFile
-	// and Rename), backdated past the sweep's stale threshold. One is a .env
-	// temp, the other a non-.env (.yaml) temp the marker also reclaims.
+	// and Rename), backdated past the sweep's stale threshold.
 	orphan1 := filepath.Join(tmpDir, "app.env.111.1"+tmpSuffix)
 	orphan2 := filepath.Join(tmpDir, "sub")
 	_ = os.MkdirAll(orphan2, 0o755)
@@ -685,9 +674,8 @@ func TestDecryptAll_sweeps_orphan_tmp_files(t *testing.T) {
 }
 
 // A source encrypted to the SECOND identity in the key file must decrypt when
-// both identities are passed — the multi-identity key-rotation path
-// (the IDENTITY_PATH file documents "one identity per line"). The negative control
-// (only id1) confirms the file genuinely requires id2.
+// both identities are passed (the multi-identity key-rotation path). The
+// negative control (only id1) confirms the file genuinely requires id2.
 func TestDecryptAll_decrypts_file_encrypted_to_second_identity(t *testing.T) {
 	id1 := newIdentity(t)
 	id2 := newIdentity(t)
@@ -724,9 +712,8 @@ func TestDecryptAll_decrypts_file_encrypted_to_second_identity(t *testing.T) {
 }
 
 // Re-running a pass over an already-decrypted tree is stable: the source is
-// re-decrypted (Decrypted counts it again), the output is refreshed with
-// identical content, and nothing errors — the v3 idempotence contract (stable
-// outcome on re-run, not skip).
+// re-decrypted, the output is refreshed with identical content, and nothing
+// errors.
 func TestDecryptAll_rerun_is_stable(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -758,17 +745,9 @@ func TestDecryptAll_rerun_is_stable(t *testing.T) {
 }
 
 // decryptAll counts swept orphans in orphansRemoved and reports the total in
-// its closing debug log. Mutating `orphansRemoved++` to `orphansRemoved--`
-// (INCREMENT_DECREMENT) logs a negative count. The count is not surfaced in
-// decryptResult, so the debug log is the only observable.
-//
-// This test also kills the CONDITIONALS_NEGATION mutant on the root-walk-error
-// guard: flipping `rootWalkErr != nil` to `== nil` makes the normal (no-error)
-// path enter the if and return early, skipping the "orphan tmp sweep complete"
-// debug log entirely — so the log assertion below fails. rootWalkErr != nil is
-// itself only reachable via a TOCTOU race between OpenRoot and WalkDir (a stale
-// mount appearing mid-pass) and cannot be forced deterministically, so this
-// skipped-log signal is what makes the mutant killable in a unit test.
+// its closing debug log; a negative count would mean the counter direction
+// flipped. The sweep-complete log only fires on the no-walk-error path, so
+// this also pins that guard's polarity.
 //
 // given one stale orphan tmp file in the tree
 // when decryptAll completes a pass
@@ -805,8 +784,7 @@ func TestDecryptAll_logs_one_orphan_removed(t *testing.T) {
 }
 
 // Invalid .enc-shaped names are workflow failures even when --ext would not
-// select their derived output. Validation must precede filtering so a bare
-// .enc or double .enc.enc cannot produce a clean zero-work pass.
+// select their derived output: validation must precede filtering.
 func TestDecryptAll_invalid_enc_names_fail_before_ext_filter(t *testing.T) {
 	identity := newIdentity(t)
 	dir := t.TempDir()
@@ -825,9 +803,8 @@ func TestDecryptAll_invalid_enc_names_fail_before_ext_filter(t *testing.T) {
 	}
 }
 
-// Matching symlinks are not silently ignored. A .enc symlink cannot be a
-// trusted ciphertext source, and a symlink at a plaintext path cannot prove
-// the deploy will consume regular plaintext; both fail without being followed.
+// Matching symlinks are not silently ignored: a .enc symlink cannot be a
+// trusted ciphertext source, and neither can a symlink at a plaintext path.
 func TestDecryptAll_matching_symlinks_fail_closed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows: symlinks require elevated privileges")
@@ -856,9 +833,8 @@ func TestDecryptAll_matching_symlinks_fail_closed(t *testing.T) {
 	}
 }
 
-// A stale ciphertext output sorts before its .enc source. The source in the
-// same pass is authoritative: it replaces the stale output and its own result
-// gates the deploy, so the first pass succeeds rather than requiring a retry.
+// A stale ciphertext output sorts before its .enc source; the source in the
+// same pass is authoritative and replaces the stale output.
 func TestDecryptAll_stale_ciphertext_output_with_valid_source_succeeds(t *testing.T) {
 	identity := newIdentity(t)
 	dir := t.TempDir()
@@ -887,9 +863,9 @@ func TestDecryptAll_stale_ciphertext_output_with_valid_source_succeeds(t *testin
 	}
 }
 
-// A static hardlink inside the root to ciphertext outside it must fail closed.
-// Hardlinks are regular files, so symlink/no-follow checks alone do not enforce
-// the configured decryption scope; the source link-count gate does.
+// A static hardlink inside the root to ciphertext outside it must fail
+// closed: the source link-count gate catches what symlink checks alone
+// cannot, since a hardlink is a regular file.
 func TestDecryptAll_source_with_multiple_links_outside_root_fails_closed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows: hardlink behavior differs")

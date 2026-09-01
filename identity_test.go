@@ -12,10 +12,7 @@ import (
 )
 
 // Tests for loadIdentities (identity.go): valid single/multi-identity key
-// files, the 1 MB size guard, comment-line tolerance, and the error paths
-// (missing/empty/garbage/comment-only). The redacted parse-error contract
-// (no key-file contents leak into the returned error) is exercised
-// indirectly by the garbage and comment-only cases.
+// files, the 1 MB size guard, comment-line tolerance, and error paths.
 
 func TestLoadIdentityValid(t *testing.T) {
 	identity := newIdentity(t)
@@ -61,7 +58,6 @@ func TestLoadIdentityErrors(t *testing.T) {
 	})
 	t.Run("oversized file", func(t *testing.T) {
 		p := filepath.Join(tmpDir, "huge.txt")
-		// Write just over 1 MB to trigger the size guard
 		_ = os.WriteFile(p, bytes.Repeat([]byte("x"), 1<<20+1), 0o644)
 		_, err := loadIdentities(p)
 		if err == nil {
@@ -76,9 +72,7 @@ func TestLoadIdentityErrors(t *testing.T) {
 func TestLoadIdentity_key_at_exact_size_limit(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// A key file at exactly 1 MB should not be rejected by the size guard.
-	// It will fail parsing (it's not a valid key), but the error should be
-	// about parsing, not about size.
+	// A key file at exactly 1 MB must not be rejected by the size guard.
 	p := filepath.Join(tmpDir, "exact-1mb.txt")
 	_ = os.WriteFile(p, bytes.Repeat([]byte("x"), 1<<20), 0o644)
 
@@ -95,7 +89,6 @@ func TestLoadIdentity_key_with_comment_lines(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
-	// age key files typically have a comment line before the key
 	content := fmt.Sprintf("# created: 2024-01-01T00:00:00Z\n# public key: %s\n%s\n",
 		identity.Recipient().String(), identity.String())
 	keyPath := filepath.Join(tmpDir, "key-with-comments.txt")
@@ -115,8 +108,8 @@ func TestLoadIdentity_key_with_comment_lines(t *testing.T) {
 	}
 }
 
-// loadIdentities with a file containing multiple identities — all are returned
-// and forwarded to age.Decrypt (supports multi-identity key rotation).
+// loadIdentities returns all identities in a multi-identity key file, all
+// forwarded to age.Decrypt (key-rotation support).
 func TestLoadIdentity_multiple_identities_returns_all(t *testing.T) {
 	id1 := newIdentity(t)
 	id2 := newIdentity(t)
@@ -151,12 +144,8 @@ func TestLoadIdentity_multiple_identities_returns_all(t *testing.T) {
 	}
 }
 
-// loadIdentity returns a specific "no identities" error when the file
-// parses successfully but contains only comments and whitespace. This is
-// distinct from the "parse error" path covered by TestLoadIdentityErrors.
-// If filippo.io/age instead rejects comment-only files as a parse error,
-// the test still passes — we just assert on "error returned", not on
-// which branch was taken.
+// A comment-and-whitespace-only key file must return an error, whether age
+// treats it as "no identities" or as a parse error.
 func TestLoadIdentity_file_with_only_comments_returns_error(t *testing.T) {
 	tmpDir := t.TempDir()
 	keyPath := filepath.Join(tmpDir, "comments-only.txt")
