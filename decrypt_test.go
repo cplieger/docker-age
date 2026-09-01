@@ -15,9 +15,8 @@ import (
 
 // Tests for the single-file decrypt path (decryptFile), the output-path
 // derivation (outputRelFor), and the suffix matcher (matchesAnyExt). The
-// directory walk (decryptAll) is covered in decrypt_walk_test.go; the
-// atomic-write temp-file lifecycle (writeDecryptedSibling, wipeTempFile,
-// sweepOrphanTmpFile) in decrypt_tmpfile_test.go.
+// directory walk (decryptAll) is in decrypt_walk_test.go; the atomic-write
+// temp-file lifecycle in decrypt_tmpfile_test.go.
 
 func TestDecryptFile_decrypts_binary_format_to_sibling(t *testing.T) {
 	identity := newIdentity(t)
@@ -85,9 +84,8 @@ func TestDecryptFile_decrypts_armored_format_to_sibling(t *testing.T) {
 	assertSourcePreserved(t, srcPath, encrypted)
 }
 
-// A plaintext payload under a .enc name is a broken encrypt workflow, not a
-// legitimate skip: silently copying it through (or ignoring it) would hide
-// the error, so decryptFile must fail the file and create no output.
+// A plaintext payload under a .enc name is a broken encrypt workflow: it must
+// fail the file and create no output rather than being silently skipped.
 func TestDecryptFile_plaintext_enc_source_fails(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -110,9 +108,8 @@ func TestDecryptFile_plaintext_enc_source_fails(t *testing.T) {
 	assertNoOutput(t, filepath.Join(tmpDir, "plain.env"))
 }
 
-// A pre-existing (stale) plaintext sibling is atomically replaced by the fresh
-// decrypt — the re-run path every deploy exercises: pull rotated ciphertext,
-// decrypt, the output reflects the new secret.
+// A pre-existing (stale) plaintext sibling is atomically replaced by the
+// fresh decrypt — the re-run path every deploy exercises.
 func TestDecryptFile_overwrites_stale_output_sibling(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -190,10 +187,9 @@ func TestDecryptFile_write_error_on_readonly_directory(t *testing.T) {
 	}
 }
 
-// TestDecryptFile_status consolidates simple decryptFile status-check cases
-// into a table-driven test. Each case sets up a .enc source (or not) and
-// asserts the returned fileStatus; sources must survive unmodified and no
-// output sibling may appear for any failing case.
+// TestDecryptFile_status consolidates decryptFile status-check cases into a
+// table. Sources must survive unmodified and no output sibling may appear
+// for any failing case.
 func TestDecryptFile_status(t *testing.T) {
 	encryptID := newIdentity(t)
 	decryptID := newIdentity(t)
@@ -211,8 +207,7 @@ func TestDecryptFile_status(t *testing.T) {
 		want    fileStatus
 	}{
 		{
-			// v3 contract change: a plaintext payload under .enc is a broken
-			// workflow, not a skip (v2 skipped non-age candidates).
+			// A plaintext payload under .enc is a broken workflow, not a skip.
 			name:    "plaintext .enc returns fileFailed",
 			file:    "plain.env" + encSuffix,
 			content: []byte("KEY=value\n"),
@@ -270,10 +265,8 @@ func TestDecryptFile_status(t *testing.T) {
 		},
 		{
 			// A large NON-age payload is classified from its header alone and
-			// fails without being read in full (the header peek precedes the
-			// size-capped read) — the outcome is fileFailed because non-age
-			// content under .enc is a workflow error, but the guard against
-			// reading huge files stays.
+			// fails without being read in full, but non-age content under
+			// .enc is still a workflow error (fileFailed).
 			name:    "oversized non-age .enc returns fileFailed",
 			file:    "huge-plain.env" + encSuffix,
 			content: bytes.Repeat([]byte("X"), 10<<20+1),
@@ -325,8 +318,8 @@ func TestDecryptFile_status(t *testing.T) {
 	}
 }
 
-// decryptFile with content that decrypts to exactly 1 MB — should succeed (not rejected).
-// Kills CONDITIONALS_BOUNDARY mutant at the `len(cleartext) > maxDecryptedSize` check.
+// decryptFile succeeds on content that decrypts to exactly 1 MB (boundary,
+// not over the limit).
 func TestDecryptFile_decrypted_content_at_exact_1MB_limit(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -354,8 +347,8 @@ func TestDecryptFile_decrypted_content_at_exact_1MB_limit(t *testing.T) {
 	}
 }
 
-// decryptFile with content that decrypts to 1 MB + 1 byte — should be rejected,
-// leaving no output sibling.
+// decryptFile rejects content that decrypts to 1 MB + 1 byte, leaving no
+// output sibling.
 func TestDecryptFile_decrypted_content_over_1MB_limit(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -420,11 +413,9 @@ func TestDecryptFile_read_error_after_stat_success(t *testing.T) {
 }
 
 // TestDecryptFile_rejects_corrupted_body_leaves_source_and_no_output feeds a
-// binary ciphertext whose header is valid but whose final payload chunk is
-// truncated: age.Decrypt succeeds, the body fails AEAD authentication on read,
-// and decryptFile must return fileFailed BEFORE the temp-write/rename, leaving
-// the source byte-for-byte intact and creating no plaintext sibling. Pins the
-// security invariant that a tampered body never produces partial plaintext.
+// binary ciphertext with a valid header but a truncated final payload chunk:
+// AEAD authentication fails on read, and decryptFile must return fileFailed
+// before the temp-write/rename, leaving the source intact and no sibling.
 func TestDecryptFile_rejects_corrupted_body_leaves_source_and_no_output(t *testing.T) {
 	id := newIdentity(t)
 	full, err := encryptBinary([]byte("SECRET=value\n"), id.Recipient())
@@ -455,10 +446,6 @@ func TestDecryptFile_rejects_corrupted_body_leaves_source_and_no_output(t *testi
 
 // decryptFile's leading guard returns fileSkipped when the context is already
 // canceled, without reading the source or creating any output.
-//
-// given an already-canceled context and a valid .enc source
-// when decryptFile runs
-// then it returns fileSkipped, the source is unchanged, and no sibling exists.
 func TestDecryptFile_skips_on_canceled_context(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -487,10 +474,9 @@ func TestDecryptFile_skips_on_canceled_context(t *testing.T) {
 }
 
 // TestDecryptFile_directory_source_returns_failed pins decryptFile's
-// header-peek read-error arm: when rootDir.Open succeeds but the target cannot
-// be read as a byte stream, decryptFile must fail closed (fileFailed). A
-// directory named like a source is the deterministic trigger: os.Root.Open
-// succeeds, then io.ReadFull returns a non-EOF "is a directory" error.
+// header-peek read-error arm: a directory named like a source makes
+// rootDir.Open succeed and io.ReadFull fail with a non-EOF error, and
+// decryptFile must fail closed.
 func TestDecryptFile_directory_source_returns_failed(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -509,8 +495,8 @@ func TestDecryptFile_directory_source_returns_failed(t *testing.T) {
 	}
 }
 
-// TestOutputRelFor pins the source→output derivation and its three rejection
-// rules (non-.enc input, bare .enc, double suffix).
+// TestOutputRelFor pins the source→output derivation and its rejection rules
+// (non-.enc input, bare .enc, double suffix).
 func TestOutputRelFor(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -547,9 +533,9 @@ func TestOutputRelFor(t *testing.T) {
 	}
 }
 
-// TestMatchesAnyExt pins the extension-suffix matcher in isolation. For
-// ciphertext candidates the walk passes the OUTPUT name (source minus .enc),
-// so these cases express the post-strip contract.
+// TestMatchesAnyExt pins the extension-suffix matcher. For ciphertext
+// candidates the walk passes the OUTPUT name (source minus .enc), so these
+// cases express the post-strip contract.
 func TestMatchesAnyExt(t *testing.T) {
 	tests := []struct {
 		name string
@@ -577,8 +563,7 @@ func TestMatchesAnyExt(t *testing.T) {
 }
 
 // The read primitive must reject final symlinks and FIFOs without following
-// or blocking on either one. These are the non-regular TOCTOU replacements an
-// attacker-shaped checkout can use after a walk or Lstat classification.
+// or blocking on either.
 func TestOpenRegularReadOnly_rejects_symlink_and_fifo(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows: symlink/FIFO behavior differs")
@@ -622,9 +607,9 @@ func TestOpenRegularReadOnly_rejects_symlink_and_fifo(t *testing.T) {
 	}
 }
 
-// A regular hardlink can import an inode from outside the configured root
-// without using a symlink. Source reads require link count one so os.Root's
-// pathname confinement cannot be turned into a cross-root decryption oracle.
+// A regular hardlink can import an inode from outside the configured root.
+// Source reads require link count one so os.Root's pathname confinement
+// cannot be turned into a cross-root decryption oracle.
 func TestOpenRegularReadOnly_rejects_source_with_multiple_links(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows: hardlink behavior differs")

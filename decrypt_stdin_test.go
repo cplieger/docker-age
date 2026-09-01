@@ -14,11 +14,10 @@ import (
 	"github.com/cplieger/slogx/capture"
 )
 
-// TestDecryptStream exercises the extracted pipe core directly: it reads from
-// an in-memory reader and writes to an in-memory buffer, so the
-// stdin/stdout-coupled path (previously 0% covered) is now testable. Each case
-// asserts on the return code and on the bytes written to out; diagnostics go
-// to slog and are deliberately not asserted on.
+// TestDecryptStream exercises the extracted pipe core directly, reading from
+// an in-memory reader and writing to an in-memory buffer. Each case asserts
+// on the return code and the bytes written to out; diagnostics go to slog
+// and are deliberately not asserted here.
 func TestDecryptStream(t *testing.T) {
 	id := newIdentity(t)
 	other := newIdentity(t)
@@ -42,13 +41,11 @@ func TestDecryptStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encrypt oversized output: %v", err)
 	}
-	// Age-headed bytes one over the input cap: trips the maxEncryptedSize
-	// guard before any decrypt is attempted.
+	// Age-headed bytes one over the input cap: trips maxEncryptedSize before
+	// any decrypt is attempted.
 	oversizedInput := append([]byte(ageHeader), bytes.Repeat([]byte("X"), maxEncryptedSize+1)...)
-	// Plaintext exactly at the output cap: the limit is inclusive, so this must
-	// decrypt and be written back in full. The oversized-output case above
-	// covers one byte over (rejected); pairing it with this exact-limit case
-	// pins the boundary as inclusive rather than off-by-one.
+	// Plaintext exactly at the output cap: the limit is inclusive, so this
+	// must decrypt and be written back in full.
 	atCapPlaintext := bytes.Repeat([]byte("A"), maxDecryptedSize)
 	atCapOutput, err := encryptArmored(atCapPlaintext, id.Recipient())
 	if err != nil {
@@ -84,13 +81,10 @@ func TestDecryptStream(t *testing.T) {
 	}
 }
 
-// The 10 MB encrypted-input cap is inclusive. An input of exactly that many
-// bytes must reach the format check, and one byte more must be turned away for
-// size before anything else is attempted. Both refusals exit 1, so the exit code
-// cannot tell them apart and the diagnostic is the only witness — and it is what
-// tells an operator whether the payload is too big or simply not age-encrypted.
-// TestDecryptStream above deliberately ignores diagnostics; this pins the pair
-// the size boundary decides between.
+// The 10 MB encrypted-input cap is inclusive: an input of exactly that many
+// bytes must reach the format check, and one byte more must be turned away
+// for size before anything else is attempted. Both refusals exit 1, so the
+// diagnostic is the only witness telling an operator which happened.
 func TestDecryptStream_encrypted_input_cap_is_inclusive(t *testing.T) {
 	id := newIdentity(t)
 	tests := []struct {
@@ -124,9 +118,9 @@ func TestDecryptStream_encrypted_input_cap_is_inclusive(t *testing.T) {
 	}
 }
 
-// FuzzDecryptStream asserts the invariants that must hold for any input bytes:
-// the return code is always 0 or 1; non-age input is always rejected with an
-// empty output; and a failure (code 1) never writes anything to out.
+// FuzzDecryptStream asserts invariants that must hold for any input: the
+// return code is always 0 or 1, non-age input is always rejected with an
+// empty output, and a failure never writes anything to out.
 func FuzzDecryptStream(f *testing.F) {
 	id, err := age.GenerateX25519Identity()
 	if err != nil {
@@ -170,17 +164,15 @@ type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, errors.New("simulated stdin read failure") }
 
-// errWriter always fails on Write, simulating a broken stdout pipe -- the real
-// failure mode behind `age-decrypt decrypt - | head -c N`, where the downstream
-// consumer closes the pipe before all plaintext is written.
+// errWriter always fails on Write, simulating a broken stdout pipe — the
+// failure mode behind `age-decrypt decrypt - | head -c N`.
 type errWriter struct{}
 
 func (errWriter) Write([]byte) (int, error) { return 0, errors.New("simulated stdout write failure") }
 
 // TestDecryptStream_read_error returns 1 when the input stream fails mid-read,
-// before any decrypt is attempted. The bytes.Reader used by TestDecryptStream
-// never errors, so the io.ReadAll error branch (decrypt_stdin.go:29-32) was
-// previously unexercised. Mutating its `return 1` to `return 0` now fails here.
+// before any decrypt is attempted (decrypt_stdin.go's io.ReadAll error branch,
+// unexercised by TestDecryptStream's non-erroring bytes.Reader).
 func TestDecryptStream_read_error(t *testing.T) {
 	id := newIdentity(t)
 
@@ -196,10 +188,8 @@ func TestDecryptStream_read_error(t *testing.T) {
 }
 
 // TestDecryptStream_write_error returns 1 when the plaintext decrypts cleanly
-// but the output stream rejects the write (broken stdout pipe). Covers the
-// out.Write error branch (decrypt_stdin.go:67-70), unreachable with the
-// bytes.Buffer used by TestDecryptStream. Mutating its `return 1` to `return 0`
-// now fails here.
+// but the output stream rejects the write (broken stdout pipe), covering the
+// out.Write error branch that TestDecryptStream's bytes.Buffer never reaches.
 func TestDecryptStream_write_error(t *testing.T) {
 	id := newIdentity(t)
 	ciphertext, err := encryptArmored([]byte("KEY=value\n"), id.Recipient())
@@ -214,13 +204,9 @@ func TestDecryptStream_write_error(t *testing.T) {
 	}
 }
 
-// TestDecryptStream_rejects_corrupted_body feeds a binary ciphertext whose
-// header is valid but whose final payload chunk is truncated by one byte:
-// age.Decrypt parses the header successfully, then the body fails AEAD
-// authentication on read. decryptStream must return 1 and write nothing -- a
-// tampered body must never yield partial, unauthenticated plaintext. This
-// reaches the io.ReadAll-after-Decrypt error branch (decrypt_stdin.go:58) that
-// the wrong-key / header-corruption cases skip (they fail inside age.Decrypt).
+// TestDecryptStream_rejects_corrupted_body feeds a binary ciphertext with a
+// valid header but a payload truncated by one byte: AEAD authentication fails
+// on read, and decryptStream must return 1 and write nothing.
 func TestDecryptStream_rejects_corrupted_body(t *testing.T) {
 	id := newIdentity(t)
 	full, err := encryptBinary([]byte("KEY=value\n"), id.Recipient())
@@ -327,13 +313,13 @@ func TestDecryptProcessStreams_cancellation_interrupts_blocked_input(t *testing.
 	}
 }
 
-// unblockableReadCloser models a real inherited BLOCKING descriptor (a
+// unblockableReadCloser models a real inherited blocking descriptor (a
 // shell-redirected FIFO, a `docker exec -i` pipe): its Read blocks until the
-// test releases it, and — crucially — its Close does NOT unblock an in-flight
-// Read. That is exactly how os.File.Close behaves on a descriptor the Go
-// runtime never registered with its poller: it cannot interrupt the syscall.
-// The os.Pipe-based signalingReadCloser pins the pollable path where Close DOES
-// unblock; this pins the path where only ctx.Done can rescue the process.
+// test releases it, and its Close does NOT unblock an in-flight Read — the
+// same limitation as a real os.File.Close on a descriptor the Go runtime
+// never registered with its poller. The os.Pipe-based signalingReadCloser
+// pins the pollable path where Close DOES unblock; this pins the path where
+// only ctx.Done can rescue the process.
 type unblockableReadCloser struct {
 	started chan struct{}
 	release chan struct{}
@@ -356,14 +342,12 @@ func (blackholeWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
 func (blackholeWriteCloser) Close() error                { return nil }
 
 // TestDecryptProcessStreams_cancellation_returns_when_close_cannot_unblock is
-// the regression guard for the inherited-blocking-descriptor liveness bug. On a
-// descriptor whose Close does NOT interrupt an in-flight Read — the descriptors
-// `decrypt -` actually runs against — cancellation must still return promptly.
-// Before the goroutine+select fix, the synchronous decryptStream call blocked
-// here forever and the process survived SIGINT/SIGTERM until the writer closed
-// (signal.NotifyContext had already consumed the signal). The os.Pipe-based
-// test above cannot catch this: os.Pipe fds are poller-registered, the one
-// class where Close does unblock a read.
+// the regression guard for the inherited-blocking-descriptor liveness bug: on
+// a descriptor whose Close cannot interrupt an in-flight Read, cancellation
+// must still return promptly. Before the goroutine+select fix, the
+// synchronous decryptStream call blocked here until the writer closed. The
+// os.Pipe-based test above cannot catch this: os.Pipe fds are
+// poller-registered, the one class where Close does unblock a read.
 func TestDecryptProcessStreams_cancellation_returns_when_close_cannot_unblock(t *testing.T) {
 	id := newIdentity(t)
 	in := &unblockableReadCloser{started: make(chan struct{}), release: make(chan struct{})}

@@ -16,18 +16,9 @@ import (
 
 // TestDecryptAll_concurrent_safe reproduces the production race the tmp-name
 // scheme guards: when an orchestrator fans out pre_deploy across N stacks in
-// parallel, N processes invoke "docker exec age /age-decrypt decrypt"
-// simultaneously. With a shared tmp name, one process's sweep deleted
-// another's in-flight tmp, surfacing (under the v2 in-place model) as:
-//
-//	renameat <dir>/.env.tmp <dir>/.env: no such file or directory
-//
-// Under v3 every pass re-decrypts each source to its sibling, so concurrent
-// passes all write the same outputs — atomically, last writer wins with
-// identical content. This test simulates the fan-out in-process (each
-// goroutine plays the role of a separate age-decrypt invocation) and asserts:
-// all runs succeed with zero failures, every output holds its plaintext,
-// every source survives as ciphertext, and no temp debris is left on disk.
+// parallel, N processes invoke the decrypt pass simultaneously. Every pass
+// re-decrypts each source to its sibling, so concurrent passes all write the
+// same outputs — atomically, last writer wins with identical content.
 func TestDecryptAll_concurrent_safe(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
@@ -52,8 +43,6 @@ func TestDecryptAll_concurrent_safe(t *testing.T) {
 	for range concurrency {
 		go func() {
 			defer wg.Done()
-			// Each goroutine does its own full pass over the tree — same as
-			// each stack's pre_deploy in the real topology.
 			res, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, []string{".env"})
 			if err != nil {
 				errCh <- fmt.Errorf("decryptAll returned error: %w", err)
@@ -91,7 +80,7 @@ func TestDecryptAll_concurrent_safe(t *testing.T) {
 		}
 	}
 
-	// No leftover decrypt-temp debris (any name carrying the tmpSuffix marker).
+	// No leftover decrypt-temp debris.
 	_ = filepath.WalkDir(tmpDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
@@ -104,14 +93,12 @@ func TestDecryptAll_concurrent_safe(t *testing.T) {
 }
 
 // TestDecryptAll_sweep_preserves_young_peer_tmps guards the age-bound sweep:
-// a fresh temp in the recognized legacy namespace (simulating another
-// process's in-flight write) must not be removed. Removing it is exactly the
-// bug that caused the original failure.
+// a fresh temp in the recognized namespace, simulating another process's
+// in-flight write, must not be removed.
 func TestDecryptAll_sweep_preserves_young_peer_tmps(t *testing.T) {
 	identity := newIdentity(t)
 	tmpDir := t.TempDir()
 
-	// Simulate a peer process's live tmp, mtime = now (well within threshold).
 	peerTmp := filepath.Join(tmpDir, "peer.env.12345.1"+tmpSuffix)
 	if err := os.WriteFile(peerTmp, []byte("mid-flight"), 0o600); err != nil {
 		t.Fatalf("write peer tmp: %v", err)
@@ -136,7 +123,6 @@ func TestDecryptAll_sweep_removes_stale_per_pid_tmps(t *testing.T) {
 	if err := os.WriteFile(staleTmp, []byte("from a SIGKILLed run"), 0o600); err != nil {
 		t.Fatalf("write stale tmp: %v", err)
 	}
-	// Backdate past the 10-minute threshold.
 	old := time.Now().Add(-30 * time.Minute)
 	if err := os.Chtimes(staleTmp, old, old); err != nil {
 		t.Fatalf("chtimes: %v", err)
@@ -170,8 +156,6 @@ func TestDecryptFile_random_tmp_is_reclaimed(t *testing.T) {
 		t.Fatalf("decryptFile = %d, want %d (fileDecrypted)", got, fileDecrypted)
 	}
 
-	// After a successful rename, no decrypt temp from the strict reserved
-	// namespace should linger.
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
 		t.Fatalf("readdir: %v", err)
@@ -184,9 +168,6 @@ func TestDecryptFile_random_tmp_is_reclaimed(t *testing.T) {
 
 	// The output holds the plaintext and the source survives as ciphertext.
 	got, err := os.ReadFile(out)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
 	if !bytes.Equal(got, original) {
 		t.Errorf("output content = %q, want %q", got, original)
 	}
@@ -199,7 +180,7 @@ func TestDecryptFile_random_tmp_is_reclaimed(t *testing.T) {
 	}
 }
 
-// TestIsOrphanTmpFile pins the reserved namespace: v3 random-token names and
+// TestIsOrphanTmpFile pins the reserved namespace: random-token names and
 // strict legacy PID/counter names match; a generic marker suffix does not.
 func TestIsOrphanTmpFile(t *testing.T) {
 	tests := []struct {
@@ -223,9 +204,8 @@ func TestIsOrphanTmpFile(t *testing.T) {
 		{name: "legacy pid-keyed suffix no longer matched", input: "app.env.tmp.12345.7", want: false},
 		{name: "marker not at end", input: "note" + tmpSuffix + ".bak", want: false},
 		{name: "marker substring missing leading dot", input: "fileage-decrypt-tmp", want: false},
-		// The two empty-output-name boundaries: the token separator sits at
-		// index 0, so there is no output name in front of it. outputRelFor
-		// refuses a bare ".enc" source, so no pass can generate either shape.
+		// outputRelFor refuses a bare ".enc" source, so no pass can generate
+		// either of these two empty-output-name shapes.
 		{name: "random token with no output name", input: ".0123456789abcdef0123456789abcdef" + tmpSuffix, want: false},
 		{name: "legacy pid/counter with no output name", input: ".12345.7" + tmpSuffix, want: false},
 	}

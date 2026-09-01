@@ -136,17 +136,7 @@ func appendNormalizedExt(extensions []string, raw string) ([]string, error) {
 	return append(extensions, ext), nil
 }
 
-// normalizeExt validates a --ext value and ensures it carries a leading dot.
-// An empty value is rejected so a malformed flag ("--ext=" or `--ext ""`)
-// cannot silently collapse to the "." suffix, which matches almost nothing and
-// turns the decrypt pass into a no-op that still exits 0 -- defeating the deploy
-// gate that keys on the exit code. A value ending in .enc is rejected too:
-// --ext filters the decrypted OUTPUT name (sources always carry the .enc
-// suffix on top of it), so `--ext .env` is what selects `.env.enc` sources —
-// `--ext .env.enc` would select `.env.enc.enc` and silently match nothing.
-// Path separators and surrounding whitespace are rejected for the same reason:
-// an extension is a filename suffix, and ambiguous values must not no-op with
-// a successful deploy-gate exit.
+// normalizeExt rejects values that could silently select no output files.
 func normalizeExt(raw string) (string, error) {
 	if raw == "" || raw == "." {
 		return "", errors.New("--ext requires a non-empty value (e.g. --ext .env)")

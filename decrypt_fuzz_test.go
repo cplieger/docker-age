@@ -12,9 +12,9 @@ import (
 )
 
 // FuzzDecryptFile feeds arbitrary .enc source content to decryptFile and pins
-// the v3 sibling-output invariants: the source is NEVER modified for any
-// input, non-age input never reports success and never creates an output, a
-// successful decrypt creates exactly the sibling, and no temp debris survives.
+// the sibling-output invariants: the source is never modified, non-age input
+// never reports success or creates output, a success creates exactly the
+// sibling, and no temp debris survives.
 func FuzzDecryptFile(f *testing.F) {
 	id, _ := age.GenerateX25519Identity()
 	validArmored, _ := encryptArmored([]byte("KEY=val\n"), id.Recipient())
@@ -48,15 +48,14 @@ func FuzzDecryptFile(f *testing.F) {
 
 		status := decryptFile(t.Context(), rootDir, srcRel, []age.Identity{id})
 
-		// Invariant 1: result is always one of the three defined statuses.
 		switch status {
 		case fileSkipped, fileDecrypted, fileFailed:
 		default:
 			t.Fatalf("decryptFile returned undefined status %d for input %q", status, data)
 		}
 
-		// Invariant 2 (the core v3 guarantee): the ciphertext source is never
-		// modified, whatever the input or outcome.
+		// The ciphertext source is never modified, whatever the input or
+		// outcome.
 		srcAfter, readErr := os.ReadFile(srcPath)
 		if readErr != nil {
 			t.Fatalf("read source back: %v", readErr)
@@ -65,8 +64,8 @@ func FuzzDecryptFile(f *testing.F) {
 			t.Errorf("source was modified on disk: got %q, want %q", srcAfter, data)
 		}
 
-		// Invariant 3: input without a recognized age header is never reported
-		// as decrypted and never produces an output sibling.
+		// Input without a recognized age header is never reported as
+		// decrypted and never produces an output sibling.
 		if !isAge {
 			if status == fileDecrypted {
 				t.Errorf("non-age input reported fileDecrypted (input %q)", data)
@@ -76,8 +75,8 @@ func FuzzDecryptFile(f *testing.F) {
 			}
 		}
 
-		// Invariant 4: a reported success means the sibling exists; a failure
-		// means it does not (this harness never pre-seeds the output).
+		// A reported success means the sibling exists; a failure means it
+		// does not (this harness never pre-seeds the output).
 		_, statErr := os.Stat(outPath)
 		switch status {
 		case fileDecrypted:
@@ -90,7 +89,7 @@ func FuzzDecryptFile(f *testing.F) {
 			}
 		}
 
-		// Invariant 5: regardless of outcome, no temp debris is ever left behind.
+		// No temp debris is ever left behind, regardless of outcome.
 		entries, readDirErr := os.ReadDir(tmpDir)
 		if readDirErr != nil {
 			t.Fatalf("readdir: %v", readDirErr)

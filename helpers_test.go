@@ -13,11 +13,6 @@ import (
 	"filippo.io/age/armor"
 )
 
-// Shared test helpers for the age-decrypt package. Construction builders and
-// the two pre-refactor return-shape adapters live here so every per-source
-// test file (decrypt, identity, config, main) can use them without hoisting
-// them into a single catch-all file.
-
 // encryptArmored encrypts data with age armor format (ASCII-safe).
 func encryptArmored(data []byte, recipient age.Recipient) ([]byte, error) {
 	var buf bytes.Buffer
@@ -116,20 +111,15 @@ func assertNoOutput(t *testing.T, out string) {
 	}
 }
 
-// decryptAllCount is a test-local adapter that preserves the pre-refactor
-// (count, err) shape for tests that only care about the successful-decrypt
-// count. New tests that need to assert on failures should call decryptAll
-// directly and use the decryptResult struct fields. Uses a background
-// context; tests that need cancellation should call decryptAll directly.
+// decryptAllCount adapts decryptAll to a (count, err) return for tests that
+// only care about the successful-decrypt count.
 func decryptAllCount(root string, identity age.Identity) (int, error) {
 	res, err := decryptAll(context.Background(), root, []age.Identity{identity}, nil)
 	return res.Decrypted, err
 }
 
-// decryptFileBool is a test-local adapter that preserves the pre-refactor
-// bool return for existing tests. New tests that need to distinguish
-// fileSkipped from fileFailed should call decryptFile directly. Uses a
-// background context (not t.Context()): no *testing.T is in scope here.
+// decryptFileBool adapts decryptFile to a bool return for tests that only
+// care whether the decrypt succeeded.
 func decryptFileBool(rootDir *os.Root, rel string, identity age.Identity) bool {
 	return decryptFile(context.Background(), rootDir, rel, []age.Identity{identity}) == fileDecrypted
 }

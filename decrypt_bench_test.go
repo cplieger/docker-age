@@ -8,10 +8,9 @@ import (
 	"filippo.io/age"
 )
 
-// BenchmarkDecryptFile measures decryptFile performance with a small representative
-// armored-encrypted input to catch performance regressions. Under the v3
-// sibling-output model the source survives every pass, so the fixture is
-// written once and each iteration re-decrypts it (overwriting the sibling).
+// BenchmarkDecryptFile measures decryptFile performance with a small armored
+// input. The source survives every pass, so the fixture is written once and
+// each iteration re-decrypts it, overwriting the sibling.
 func BenchmarkDecryptFile(b *testing.B) {
 	id, err := age.GenerateX25519Identity()
 	if err != nil {

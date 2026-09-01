@@ -9,26 +9,14 @@ import (
 	"filippo.io/age"
 )
 
-// loadIdentities reads all age identities from the given file. The element
-// type is the age.Identity interface rather than *age.X25519Identity so the
-// caller survives future key-type changes (plugin, passphrase, etc.) without
-// any downstream signature churn. All parsed identities are returned and
-// forwarded to the variadic age.Decrypt so multi-identity key rotation
-// (the IDENTITY_PATH file documents "one identity per line") works as intended.
-//
-// It rejects files larger than 1 MB to prevent OOM on misconfigured mounts.
+// loadIdentities returns every identity in path for key rotation and bounds reads to 1 MB.
 func loadIdentities(path string) ([]age.Identity, error) {
-	// Path comes from the IDENTITY_PATH environment variable
-	// (operator-supplied, read in config.go), not from any untrusted
-	// input — gosec G304 is a false positive here.
-	f, err := os.Open(path) // #nosec G304 -- IDENTITY_PATH env-sourced trusted path
+	f, err := os.Open(path) // #nosec G304 -- IDENTITY_PATH is operator configuration.
 	if err != nil {
 		return nil, fmt.Errorf("open key file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
-	// Key files are tiny (a few hundred bytes). Reject anything over 1 MB
-	// to prevent OOM if a large file is mounted by mistake.
 	const maxKeyFileSize = 1 << 20
 	info, err := f.Stat()
 	if err != nil {
@@ -38,15 +26,9 @@ func loadIdentities(path string) ([]age.Identity, error) {
 		return nil, fmt.Errorf("key file too large: %d bytes (max %d)", info.Size(), maxKeyFileSize)
 	}
 
-	// Defence in depth: even if the size pre-check above is bypassed (e.g. a
-	// mutated/removed guard), cap the read so an unbounded file can never reach
-	// the parser. Mirrors the io.LimitReader bound used on every read in
-	// decrypt.go; reads any file that passed the size check above.
 	identities, err := age.ParseIdentities(io.LimitReader(f, maxKeyFileSize))
 	if err != nil {
-		// age's parse error can echo the raw key-file line (e.g.
-		// "unknown identity type: %q"); drop it so a misconfigured key
-		// file never leaks its contents into stderr/Loki.
+		// age parse errors can expose a key line.
 		return nil, errors.New("parse key file: malformed identity " +
 			"(contents omitted; the IDENTITY_PATH file must hold one age identity per line)")
 	}
