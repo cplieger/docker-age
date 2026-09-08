@@ -766,9 +766,8 @@ func TestDecryptAll_logs_one_orphan_removed(t *testing.T) {
 	}
 
 	var buf strings.Builder
-	prev := slog.Default()
+	saveLogGlobals(t)
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	if _, err := decryptAll(t.Context(), tmpDir, []age.Identity{identity}, nil); err != nil {
 		t.Fatalf("decryptAll: %v", err)
