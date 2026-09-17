@@ -3,10 +3,7 @@
 [![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/size.json)](https://github.com/cplieger/docker-age/pkgs/container/docker-age)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: distroless static](https://img.shields.io/badge/base-distroless%2Fstatic-2496ED?logo=docker)
-[![Test coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/coverage.json)](https://github.com/cplieger/docker-age/actions/workflows/coverage.yml)
 [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/mutation.json)](https://github.com/cplieger/docker-age/issues?q=label%3Agremlins-tracker)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13202/badge)](https://www.bestpractices.dev/projects/13202)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/docker-age/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/docker-age)
 [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/docker-age/releases)
 
 <!-- hub-overview BEGIN -->
@@ -195,11 +192,15 @@ Paths ending `.age-decrypt-tmp` are reserved for the decryptor's plaintext temps
 
 The 10 MB ciphertext and 1 MB plaintext limits are **per file**. A pass has no aggregate file-count, total-byte, or wall-clock budget, so bound repository size and invocation frequency at the deployment layer.
 
+Deleting a `.enc` source does not delete a plaintext sibling a previous pass generated; remove the output yourself when you retire a secret.
+
 ## Security
 
 The tool fails closed: non-age `.enc` content, stray ciphertext at a plaintext path, and symlink, hardlink, or otherwise nonregular sources all reject with a non-zero exit, and pathname resolution is confined to the mounted tree so a link cannot pull ciphertext in from outside it. The image runs as a non-root user on a distroless base (no shell, no package manager). Live scan results are on the repository's Security tab.
 
 The image is published with [cosign](https://github.com/sigstore/cosign) signatures and SBOM attestations.
+
+A SIGINT or SIGTERM during a pass exits non-zero and never reports success, so the deploy is blocked. Publication is not transactional at the final step: a signal landing between the last cancellation check and the atomic rename (or the stdout write in `decrypt -`) can still publish that one file's plaintext before the non-zero exit. A file-mode output is always a complete derivation of its own source, never a partial write.
 
 ## Dependencies
 
