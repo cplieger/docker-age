@@ -149,6 +149,24 @@ BuildKit warnings fatal):
 docker build -t age-decrypt .
 ```
 
+That build also runs the smoke test `tests/smoke.sh` in the Dockerfile's
+`test` stage, which the final stage depends on, so CI's image build fails when
+the built binary cannot do its real job. The script mints an age key pair and
+fixtures with the upstream `age` CLI, then checks that a binary and an armored
+ciphertext decrypt to the expected plaintext without modifying the source, and
+that each failure shape exits non-zero: non-age input on stdin, stray
+ciphertext at a plaintext path, plaintext under a `.enc` name, malformed `.enc`
+names, a corrupted ciphertext body, and a tree where one source is encrypted to
+a key the identity file does not hold beside one that decrypts (a partial
+failure is a failure). For the three shapes that have a plaintext sibling path
+(plaintext under a `.enc` name, the corrupted body, the foreign-key source) it
+also checks that no plaintext was written there. Run it outside Docker with
+`age` and `age-keygen` on `PATH`:
+
+```bash
+go build -o age-decrypt . && AGE_DECRYPT_BIN=./age-decrypt sh tests/smoke.sh
+```
+
 ## Gotchas
 
 - A pre-existing plaintext sibling is intentionally replaced, even if it is
