@@ -374,23 +374,72 @@ func TestLogDecryptResult_emits_all_counts(t *testing.T) {
 	// Not parallel: capture.Default swaps the global slog default.
 	rec := capture.Default(t)
 
-	logDecryptResult("decryption complete", decryptResult{
+	logDecryptResult(t.Context(), slog.LevelError, "decryption failed", decryptResult{
 		Decrypted: 3, Failed: 2, Skipped: 5, WalkErrors: 1,
 	})
 
-	if got := rec.CountExact("decryption complete"); got != 1 {
-		t.Fatalf("CountExact(decryption complete) = %d, want 1 (messages=%v)", got, rec.Messages())
+	if got := rec.CountExact("decryption failed"); got != 1 {
+		t.Fatalf("CountExact(decryption failed) = %d, want 1 (messages=%v)", got, rec.Messages())
 	}
-	if got := rec.CountLevel(slog.LevelInfo, "decryption complete"); got != 1 {
-		t.Errorf("CountLevel(INFO, decryption complete) = %d, want 1", got)
+	if got := rec.CountLevel(slog.LevelError, "decryption failed"); got != 1 {
+		t.Errorf("CountLevel(ERROR, decryption failed) = %d, want 1", got)
 	}
 	for key, want := range map[string]string{
 		"decrypted": "3", "failed": "2", "skipped": "5", "walk_errors": "1",
 	} {
-		if !rec.HasAttr("decryption complete", key, want) {
-			got, ok := rec.AttrValue("decryption complete", key)
+		if !rec.HasAttr("decryption failed", key, want) {
+			got, ok := rec.AttrValue("decryption failed", key)
 			t.Errorf("summary %s = %q (found=%v), want %s", key, got, ok, want)
 		}
+	}
+}
+
+// A pass where one source decrypts and another fails is a failed pass: it
+// exits non-zero and its one summary line says so at ERROR, so a reader of the
+// log never sees "decryption complete" beside a non-zero exit.
+func TestRunDecrypt_partial_failure_logs_failed_not_complete(t *testing.T) {
+	identity := newIdentity(t)
+	stranger := newIdentity(t)
+	tmpDir := t.TempDir()
+	writeEncSource(t, tmpDir, "good.env", []byte("OK=1\n"), identity.Recipient())
+	writeEncSource(t, tmpDir, "bad.env", []byte("NO=1\n"), stranger.Recipient())
+
+	// Not parallel: capture.Default swaps the global slog default.
+	rec := capture.Default(t)
+	code := runDecrypt(t.Context(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{identity})
+	if code != 1 {
+		t.Fatalf("runDecrypt(one good, one wrong-key source) = %d, want 1", code)
+	}
+	if got := rec.CountExact("decryption complete"); got != 0 {
+		t.Errorf("CountExact(decryption complete) = %d, want 0 on a failed pass (messages=%v)", got, rec.Messages())
+	}
+	if got := rec.CountLevel(slog.LevelError, "decryption failed"); got != 1 {
+		t.Errorf("CountLevel(ERROR, decryption failed) = %d, want 1 (messages=%v)", got, rec.Messages())
+	}
+	for key, want := range map[string]string{"decrypted": "1", "failed": "1"} {
+		if !rec.HasAttr("decryption failed", key, want) {
+			got, ok := rec.AttrValue("decryption failed", key)
+			t.Errorf("summary %s = %q (found=%v), want %s", key, got, ok, want)
+		}
+	}
+}
+
+func TestRunDecrypt_clean_pass_logs_complete_at_info(t *testing.T) {
+	identity := newIdentity(t)
+	tmpDir := t.TempDir()
+	writeEncSource(t, tmpDir, "good.env", []byte("OK=1\n"), identity.Recipient())
+
+	// Not parallel: capture.Default swaps the global slog default.
+	rec := capture.Default(t)
+	code := runDecrypt(t.Context(), &config{RepoRoot: tmpDir, Extensions: []string{".env"}}, []age.Identity{identity})
+	if code != 0 {
+		t.Fatalf("runDecrypt(one good source) = %d, want 0", code)
+	}
+	if got := rec.CountLevel(slog.LevelInfo, "decryption complete"); got != 1 {
+		t.Errorf("CountLevel(INFO, decryption complete) = %d, want 1 (messages=%v)", got, rec.Messages())
+	}
+	if got := rec.CountExact("decryption failed"); got != 0 {
+		t.Errorf("CountExact(decryption failed) = %d, want 0 on a clean pass", got)
 	}
 }
 
