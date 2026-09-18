@@ -1,10 +1,6 @@
 # docker-age
 
-[![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/size.json)](https://github.com/cplieger/docker-age/pkgs/container/docker-age)
-![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
-![base: distroless static](https://img.shields.io/badge/base-distroless%2Fstatic-2496ED?logo=docker)
-[![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/mutation.json)](https://github.com/cplieger/docker-age/issues?q=label%3Agremlins-tracker)
-[![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/docker-age/releases)
+[![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/size.json)](https://github.com/cplieger/docker-age/pkgs/container/docker-age) ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue) ![base: distroless static](https://img.shields.io/badge/base-distroless%2Fstatic-2496ED?logo=docker) [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/mutation.json)](https://github.com/cplieger/docker-age/issues?q=label%3Agremlins-tracker) [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/docker-age/releases)
 
 <!-- hub-overview BEGIN -->
 Decrypt [age](https://github.com/FiloSottile/age)-encrypted `.enc` files to their plaintext siblings at deploy time so your orchestrator can read them: `.env` files, any other config, or a single file piped through stdin/stdout. Ciphertext stays tracked in git; plaintext is generated next to it and never committed.
