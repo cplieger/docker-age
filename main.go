@@ -116,15 +116,15 @@ func runDecrypt(ctx context.Context, cfg *config, identities []age.Identity) int
 		return 1
 	}
 
-	logDecryptResult("decryption complete", totalResult)
-	warnIfNoFilesSeen(totalResult, cfg.RepoRoot, cfg.Targets)
 	// A failed source or an unreadable subtree both leave ciphertext where
-	// plaintext was expected, so both block the deploy.
+	// plaintext was expected, so both block the deploy. The pass gets exactly
+	// one summary line, and its level and message carry the verdict.
 	if totalResult.Failed > 0 || totalResult.WalkErrors > 0 {
-		slog.Error("decryption completed with failures",
-			"failed", totalResult.Failed, "walk_errors", totalResult.WalkErrors)
+		logDecryptResult(ctx, slog.LevelError, "decryption failed", totalResult)
 		return 1
 	}
+	logDecryptResult(ctx, slog.LevelInfo, "decryption complete", totalResult)
+	warnIfNoFilesSeen(totalResult, cfg.RepoRoot, cfg.Targets)
 	return 0
 }
 
@@ -181,8 +181,8 @@ func decryptSingleFile(ctx context.Context, path string, identities []age.Identi
 	return decryptFile(ctx, rootDir, filepath.Base(path), identities)
 }
 
-func logDecryptResult(msg string, result decryptResult) {
-	slog.Info(msg,
+func logDecryptResult(ctx context.Context, level slog.Level, msg string, result decryptResult) {
+	slog.Log(ctx, level, msg,
 		"decrypted", result.Decrypted, "failed", result.Failed,
 		"skipped", result.Skipped, "walk_errors", result.WalkErrors)
 }
