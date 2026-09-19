@@ -225,3 +225,5 @@ This project was built with AI-assisted tooling using [Claude](https://claude.co
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+The image carries the license text of every bundled component under `/usr/share/licenses/`, including the BSD-3-Clause text of the [age](https://github.com/FiloSottile/age) library it links.

@@ -1,5 +1,6 @@
-# Minimize the build context: the Dockerfile needs go.mod, go.sum, *.go, and
-# the build-time smoke test (tests/smoke.sh, run in the `test` stage). Deny
+# Minimize the build context: the Dockerfile needs go.mod, go.sum, *.go, the
+# build-time smoke test (tests/smoke.sh, run in the `test` stage), and the
+# license texts the builder collects into /usr/share/licenses. Deny
 # everything, then allow only those inputs back in so a stray
 # keys.txt / .env / .env.dec in the working tree never reaches the daemon.
 *
@@ -8,3 +9,8 @@
 !*.go
 !tests
 !tests/smoke.sh
+!scripts
+!scripts/collect-licenses.sh
+!LICENSE
+!NOTICE
+!THIRD_PARTY_NOTICES.md
