@@ -1,14 +1,19 @@
-# Example compose for docker-age. See the README for all configuration options and hardening.
-# Trigger (.env.enc -> .env): docker exec age /age-decrypt decrypt --ext .env
+# Example compose for docker-age. See docs/configuration.md and docs/security.md for all configuration options and hardening.
 services:
   age:
     image: ghcr.io/cplieger/docker-age:latest
     container_name: age
-    restart: unless-stopped  # always-on: stays up between deploys as an exec target
+    # Before each "docker compose up", your deploy step runs
+    # "docker exec age /age-decrypt decrypt --ext .env" to write the .env files.
+    restart: unless-stopped  # stays up between deploys so the deploy step can reach it
 
     environment:
-      IDENTITY_PATH: "/age/keys.txt"  # required; age identity file
+      IDENTITY_PATH: "/age/keys.txt"  # required, your age identity file
 
     volumes:
-      - "/path/to/age-keys:/age:ro"  # dir holding the age identity (keys.txt)
-      - "/path/to/repo:/repo"  # tree to decrypt (or a folder of repos)
+      # Put your age identity in keys.txt, then run "sudo chown 65532:65532 keys.txt"
+      # and "sudo chmod 600 keys.txt" before the first decrypt.
+      - "/path/to/age-keys:/age:ro"
+      # Your checkout with the .env.enc files. For each folder that holds one, run
+      # "sudo chgrp 65532 <folder>" and "sudo chmod g+w <folder>" before the first decrypt.
+      - "/path/to/repo:/repo"

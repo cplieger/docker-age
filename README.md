@@ -3,218 +3,119 @@
 [![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/size.json)](https://github.com/cplieger/docker-age/pkgs/container/docker-age) [![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)](https://github.com/cplieger/docker-age/pkgs/container/docker-age) [![base: distroless static](https://img.shields.io/badge/base-distroless%2Fstatic-2496ED?logo=docker)](https://github.com/cplieger/docker-age/blob/main/Dockerfile) [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/mutation.json)](https://github.com/cplieger/docker-age/issues?q=label%3Agremlins-tracker) [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/docker-age/releases)
 
 <!-- hub-overview BEGIN -->
-Decrypt [age](https://github.com/FiloSottile/age)-encrypted `.enc` files to their plaintext siblings at deploy time so your orchestrator can read them: `.env` files, any other config, or a single file piped through stdin/stdout. Ciphertext stays tracked in git; plaintext is generated next to it and never committed.
+docker-age decrypts the [age](https://github.com/FiloSottile/age)-encrypted `.env` files in a git checkout on your server, right before your Docker Compose stacks start. Your secrets stay encrypted in git. It does not encrypt files or start your stacks.
 
 ## What it does
 
-Walks a mounted directory tree (or a single `.enc` file you name), finds every `<name>.enc` ciphertext source (binary or armored age format), and atomically writes its decrypted plaintext to the sibling `<name>`: `apps/x/.env.enc` becomes `apps/x/.env`. The source is never modified, so your working tree stays clean: `git pull` always applies rotated secrets, and the generated plaintext is just re-derived on the next pass. An `--ext` filter narrows a walk by the OUTPUT suffix (`--ext .env` selects `.env.enc` sources); a `-` target switches to a stdin-to-stdout pipe for a single file. Designed to run as a `pre_deploy` step before `docker compose up` reads the files.
+docker-age lets you commit every secret encrypted and still start each stack with a plain `.env` file:
 
-The `age-decrypt` binary is a single static Go executable on `gcr.io/distroless/static:nonroot`:
+- Writes `apps/x/.env` next to each `apps/x/.env.enc` and never changes the encrypted file, so `git pull` stays clean.
+- Fails when a file will not decrypt or encrypted text sits at a plain file's name, so your deploy can stop.
+- Tries every key in your identity file, so you rotate a key by adding the new one beside the old.
+- Also decrypts any other file named `<name>.enc`, or one file you pipe through it.
 
-- `decrypt --ext .env`: decrypt every `.env.enc` in `REPO_ROOT` to its `.env` sibling (the deploy use case)
-- `decrypt /path`: decrypt a specific `.enc` file or every `.enc` source under a directory tree
-- `decrypt -`: pipe, stdin ciphertext in, stdout plaintext out
-- `health`: file-based health probe for Docker `HEALTHCHECK`
+## Who it is for
 
-The `decrypt` subcommand always requires you to say **what** to decrypt (an extension filter, a path, or `-`). Server mode (no subcommand) is the always-on container entrypoint that idles as a `docker exec` target (see the Server mode note under [Subcommands](#subcommands) for details).
+docker-age is built for Docker Compose stacks deployed from a git checkout, with each secret committed as an age-encrypted file. You need the age command-line tool to encrypt your files and an identity file from `age-keygen` on each server. Your deploy step must run `docker exec` before your stacks start.
 
-### Why this design
+Two other projects suit a different setup:
 
-- **Ciphertext and plaintext are separate planes**: `<name>.enc` is tracked in git and never touched; `<name>` is generated and gitignored. Your compose file references `apps/<x>/.env` like usual, `git status` stays meaningful on live checkouts, and a `git pull` can never conflict with a decrypted secret (the failure mode of in-place rewriting, which v2 used)
-- **Fail-closed**: a `.enc` source that will not decrypt, an unreadable subtree, or stray age ciphertext sitting at a plaintext path (an un-migrated secret) all exit non-zero and block the deploy; ciphertext can never be silently consumed as config
-- **Multi-identity**: the key file may hold several identities (one per line); a file encrypted to any one of them decrypts, so key rotation is just adding the new key alongside the old
-- **Concurrency-safe**: parallel invocations on the same stable tree won't collide, so simultaneous deploys are safe
-- **Atomic**: a failed decrypt never leaves a half-written `.env`, and a source can never be corrupted (it is opened read-only)
-- **Scoped source reads**: symlinks, hardlinks, FIFOs, devices, and directories are rejected as sources, and pathname resolution is confined to the mounted tree; under `--ext` any matching nonregular plaintext path fails the pass
-- **Distroless + nonroot**: minimal attack surface; no shell, no package manager, no extra binaries
-- **Per-file bounds**: each encrypted input is capped at 10 MB and each decrypted output at 1 MB; plaintext is published mode 0600
-- **File-based health marker**: works with Docker's no-shell distroless healthcheck (`HEALTHCHECK CMD ["/age-decrypt", "health"]`)
+- Consider [SOPS](https://github.com/getsops/sops) if you want an editor for encrypted YAML, JSON, ENV and INI files. It can use keys from AWS KMS, GCP KMS, Azure Key Vault, age or PGP.
+- Consider [git-crypt](https://github.com/AGWA/git-crypt) if you want files decrypted whenever the repository is checked out, with keys shared through GPG.
+
+docker-age is free software under the Apache-2.0 license.
 <!-- hub-overview END -->
 
 ## Quick start
 
-Available from both `ghcr.io/cplieger/docker-age` and `docker.io/cplieger/docker-age` (identical images and tags).
-
-The expected workflow is encryption-at-rest in git, decryption at deploy:
-
-1. Encrypt your `.env` files locally:
-
-   ```bash
-   age -a -R recipients.txt -o apps/myservice/.env.enc apps/myservice/.env
-   ```
-
-2. Commit `apps/myservice/.env.enc` (encrypted, ASCII-armored) and gitignore
-   the plaintext (`echo 'apps/*/.env' >> .gitignore` or equivalent). The
-   `.env` you edit locally is exactly the file your apps read after decrypt.
-3. On each server, run `age-decrypt` as an always-on container (see the Server
-   mode note below). Your deploy triggers a fresh pass before the stack starts
-   with `docker exec age /age-decrypt decrypt --ext .env`:
+The image is on GitHub Container Registry and Docker Hub, for `amd64` and `arm64`. This is the [`compose.yaml`](compose.yaml) in this repository. The container stays running between deploys, and your deploy step runs one `docker exec` command against it to decrypt. [Configuration](docs/configuration.md#running-once) also has a one-time `docker run` form.
 
 ```yaml
 services:
   age:
     image: ghcr.io/cplieger/docker-age:latest
     container_name: age
-    restart: unless-stopped  # always-on: stays up between deploys as an exec target
+    # Before each "docker compose up", your deploy step runs
+    # "docker exec age /age-decrypt decrypt --ext .env" to write the .env files.
+    restart: unless-stopped  # stays up between deploys so the deploy step can reach it
 
     environment:
-      # Required: path to the age identity file (one identity per line).
-      IDENTITY_PATH: "/age/keys.txt"
-      # REPO_ROOT defaults to /repo (the tree `decrypt` walks when no path is
-      # given). Set it only to target a SUBDIRECTORY of /repo; see the note below
-      # on re-cloning orchestrators. A tree (or folder of many repos) mounted at
-      # /repo is fine as-is.
+      IDENTITY_PATH: "/age/keys.txt"  # required, your age identity file
 
     volumes:
-      - "/path/to/age-keys:/age:ro"  # directory with the age identity (keys.txt, mode 0600)
-      - "/path/to/repo:/repo"        # the tree to decrypt, or a folder containing many repos
+      # Put your age identity in keys.txt, then run "sudo chown 65532:65532 keys.txt"
+      # and "sudo chmod 600 keys.txt" before the first decrypt.
+      - "/path/to/age-keys:/age:ro"
+      # Your checkout with the .env.enc files. For each folder that holds one, run
+      # "sudo chgrp 65532 <folder>" and "sudo chmod g+w <folder>" before the first decrypt.
+      - "/path/to/repo:/repo"
 ```
 
-Trigger a decrypt pass on demand (no restart needed):
+1. On your computer, encrypt each `.env` file to your age recipients with `age -a -R recipients.txt -o apps/myservice/.env.enc apps/myservice/.env`.
+2. Keep the plain files out of git with `echo 'apps/*/.env' >> .gitignore`.
+3. If git already tracks a plain `.env`, run `git rm --cached apps/myservice/.env`. Otherwise git would show your decrypted secret as a change you could commit.
+4. Commit the `.env.enc` files and `.gitignore`.
+5. On the server, put your age identity in `/path/to/age-keys/keys.txt`, then run `sudo chown 65532:65532 keys.txt` and `sudo chmod 600 keys.txt` in that folder.
+6. For each folder in your checkout that holds a `.env.enc` file, run `sudo chgrp 65532 apps/myservice` and `sudo chmod g+w apps/myservice`. To run the container as the checkout's owner instead, see [Configuration](docs/configuration.md#running-as-another-user).
+7. Run `docker compose up -d`.
+8. Add `docker exec age /age-decrypt decrypt --ext .env` to your deploy step, before `docker compose up` runs. Make the deploy stop when that command fails.
 
-```bash
-docker exec age /age-decrypt decrypt --ext .env
-```
-
-> **Re-cloning orchestrators:** if your deploy tool replaces the repo directory
-> (a new inode) on each sync, a container mounting that directory sees a stale
-> mount. Mount the stable **parent** at `/repo` and set
-> `REPO_ROOT=/repo/<repo-name>` so the walk re-resolves the child on every
-> pass.
-
-Or as a fire-and-forget one-shot before deploy (no long-running container):
-
-```bash
-docker run --rm \
-  -e IDENTITY_PATH=/age/keys.txt \
-  -v $PWD/age-keys:/age:ro \
-  -v $PWD/repo:/repo \
-  ghcr.io/cplieger/docker-age:latest decrypt --ext .env
-```
+Run that command once by hand. You should see `decryption complete` with a `decrypted=` count above 0. If you see `failed to load identities` with `permission denied`, the container's user cannot read `keys.txt`, so repeat step 5. With any other error in that line, fix `keys.txt` itself, which must hold one age identity per line and be 1 MB at most.
 
 ## Configuration reference
 
-### Environment variables
+Settings are environment variables. Recreate the container after you change one.
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `IDENTITY_PATH` | Absolute path to the age identity file (one identity per line; all are tried, so key rotation works) | _required_ (example: `/age/keys.txt`) |
-| `REPO_ROOT` | Absolute path to the tree `decrypt` walks when no target path is given | `/repo` |
-| `LOG_LEVEL` | Log level: `debug`/`info`/`warn`/`error` (case-insensitive); `debug` shows per-file skip reasons | `info` |
-
-### Volumes
+| `IDENTITY_PATH` | Path inside the container to your age identity file from `age-keygen`. Every identity in it is tried, one per line | required |
+| `REPO_ROOT` | Folder that `decrypt --ext` searches when you name no path | `/repo` |
+| `LOG_LEVEL` | `debug`, `info`, `warn` or `error`. `debug` shows why each file was skipped | `info` |
 
 | Mount | Description |
 | --- | --- |
-| `/age` | Directory containing your age identity (`keys.txt`, mode 0600). Mount read-only. |
-| `/repo` | Repository tree of `.enc` sources; plaintext siblings are generated in it. |
+| `/age` | The folder that holds your identity file. Mount it read-only |
+| `/repo` | Your checkout. Each `.env` is written next to its `.env.enc` here |
 
-### Subcommands
+The image opens no ports. The container runs these commands through `docker exec age /age-decrypt <command>`:
 
-```
-/age-decrypt decrypt [--ext <suffix>]... [<path>...]
-/age-decrypt decrypt -
-/age-decrypt health
-```
-
-The `decrypt` subcommand requires **at least one** of: `--ext`, a target path, or `-`. Calling `decrypt` with no arguments is an error (nothing to do).
-
-| Input | Behavior |
+| Command | What it does |
 | --- | --- |
-| `decrypt --ext .env` | Walk `REPO_ROOT`, decrypt every `*.env.enc` to its `.env` sibling |
-| `decrypt --ext .env --ext .yaml` | Walk `REPO_ROOT`, decrypt `*.env.enc` OR `*.yaml.enc` sources |
-| `decrypt --ext .env /path/to/dir` | Walk the given directory (not `REPO_ROOT`), same filter |
-| `decrypt /path/to/file.env.enc` | Decrypt that one source to `/path/to/file.env` (explicit target must be `.enc`) |
-| `decrypt /path/to/dir` | Walk that directory, decrypt **all** `.enc` sources (no filter) |
-| `decrypt -` | Pipe: read ciphertext from stdin, write plaintext to stdout |
-| `decrypt` (bare, no args) | **Error** (exit 1): you must specify what to decrypt |
-| `health` | Read `/tmp/.healthy` marker: exit 0 if healthy, 1 if not |
+| `decrypt --ext .env` | Decrypts every `.env.enc` file under `REPO_ROOT` to the `.env` beside it |
+| `decrypt <path>` | Decrypts that `.enc` file, or every `.enc` file in that folder |
+| `decrypt -` | Decrypts one file from standard input to standard output |
+| `health` | Runs the healthcheck |
 
-**`--ext` behavior:**
-
-- The filter names the decrypted OUTPUT suffix: `--ext .env` selects `.env.enc` sources and produces `.env` files.
-- The dot is auto-prefixed if missing (`--ext env` = `--ext .env`).
-- Values ending in `.enc`, containing `/` or `\`, or carrying surrounding whitespace are rejected instead of becoming silent no-op filters.
-- The same post-strip filter applies to an explicit file target: `decrypt --ext .env config.yaml.enc` skips that source because its output is `config.yaml`.
-- `--ext` cannot be combined with stdin (`decrypt -`) because a byte stream has no output filename to filter.
-- Under `--ext`, non-`.enc` paths matching the suffix are also checked: regular plaintext there is the expected steady state (a generated output from a previous pass, or a committed plaintext config) and is skipped, while **age ciphertext or a nonregular path at the plaintext name fails the pass**.
-- Without `--ext`, only `.enc` files are considered and everything else is out of scope (a deliberately encrypted archive kept at rest never trips the guard).
-
-**Server mode** (no subcommand, the container's PID 1 entrypoint): starts up, marks itself healthy, and **idles**. No startup decrypt: all decryption is triggered explicitly via `docker exec age /age-decrypt decrypt --ext .env` (or any other `decrypt` invocation). The container stays alive as a long-lived exec target; the health marker is always healthy while the process is running. Use `restart: unless-stopped` in compose so it recovers from OOM/crashes.
-
-## File-format detection
-
-Each `.enc` source is inspected by its first bytes:
-
-- **Armored age** (`-----BEGIN AGE ENCRYPTED FILE-----`): decrypted via `age/armor`
-- **Binary age** (`age-encryption.org/v1`): decrypted directly
-- **Anything else**: a **failure** (exit non-zero). A `.enc` file that is not age ciphertext means a broken encrypt workflow, and silently passing it through would hide that
-
-Mixing encrypted and plaintext files in the same tree is fine: plaintext lives at the plain name, ciphertext at the `.enc` name. Re-running `decrypt` is idempotent in outcome; every pass re-derives the same plaintext siblings from the same sources (a rotated `.enc` simply produces the new plaintext on the next pass).
-
-Two source names are rejected up front, before any decryption: a bare `.enc` (no output name) and a double-suffixed `<x>.enc.enc` (its output would itself look like a ciphertext source and poison the next pass).
-
-## Migrating from v2 (in-place model)
-
-v2 rewrote ciphertext files in place (`apps/x/.env` was tracked ciphertext that became plaintext on the server). v3 flips the layout: ciphertext moves to `apps/x/.env.enc` and the plaintext `.env` is generated. To migrate a repo:
-
-1. Rename every tracked ciphertext file: `git mv apps/x/.env apps/x/.env.enc` (repeat per file; plaintext configs that were never encrypted stay put).
-2. Gitignore the generated plaintext paths (for example `apps/*/.env`). If an output path is still tracked, v3 deliberately overwrites it with the decrypted bytes and leaves the checkout dirty; remove migrated secret outputs from the index rather than relying on the ignore rule alone.
-3. Remove any deploy script that restores or resets the old tracked plaintext path (for example `git restore -- 'apps/*/.env'`). After the rename there is nothing tracked at that path, and under `set -e` such a command can abort before pull/decrypt.
-4. Deploy the v3 image **before** the renamed tree reaches the servers (an old v2 binary finds no `.env` ciphertext after the rename and decrypts nothing; a v3 binary on a pre-rename tree fails loudly on the stray ciphertext under `--ext`).
-5. Keep the trigger command unchanged: `--ext .env` selects `.env.enc` sources in v3.
-
-The stray-ciphertext guard is the migration net: after step 3, any secret you forgot to rename fails the deploy with a `stray age ciphertext` error naming the file, instead of letting an app read ciphertext.
-
-## Healthcheck
-
-`age-decrypt health` reads `/tmp/.healthy`. In **server mode** the marker is set healthy the moment the container starts, stays healthy as long as the process is alive, and is removed on shutdown. The marker reflects process **liveness** (it lets Docker detect and restart a crashed server), **not** decrypt outcome. A `decrypt` invocation does not touch the marker; its success or failure is reported by its **exit code** (non-zero on any failure, including an unreadable repo root). That non-zero exit is the deploy-blocking signal: wire your `pre_deploy` step to fail on it. The baked healthcheck targets the long-running server, so the always-on setup above uses it as-is. If you instead run a one-shot `decrypt` container (the `docker run --rm` form above), disable the healthcheck (`healthcheck: {disable: true}` in compose); the one-shot exits without ever running the server that writes the marker. The standard distroless `HEALTHCHECK` uses CMD form (no shell needed):
-
-```dockerfile
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
-    CMD ["/age-decrypt", "health"]
-```
-
-## File-permission requirements
-
-- The age identity file (`keys.txt`) must be readable by the container user. The image runs as the distroless non-root user by default; keep the identity mode 0600 on the host and readable by that user.
-- The container needs read access to the `.enc` sources and write access to the directories holding them (the plaintext sibling is created via an atomic temp-then-rename in the same directory). Generated plaintext is written mode 0600, owned by the container user. Run it as a user that owns the tree, or fix ownership on the mounts. If the tree has mixed or root ownership (for example an orchestrator that clones it as root), override with `user: "0:0"`.
-
-## Filesystem stability and temp namespace
-
-A decrypt pass supports concurrent `age-decrypt` invocations on the same **stable checkout**. It is not a defense against an untrusted process that can rename, hardlink, or replace files during the pass; do not grant untrusted writers access to the mounted tree while decryption runs.
-
-Paths ending `.age-decrypt-tmp` are reserved for the decryptor's plaintext temps, and a pass may clean up stale files matching that pattern; do not create application files in this namespace.
-
-The 10 MB ciphertext and 1 MB plaintext limits are **per file**. A pass has no aggregate file-count, total-byte, or wall-clock budget, so bound repository size and invocation frequency at the deployment layer.
-
-Deleting a `.enc` source does not delete a plaintext sibling a previous pass generated; remove the output yourself when you retire a secret.
+`decrypt` with nothing to decrypt is an error. Each encrypted file may be 10 MB at most and each decrypted file 1 MB, and a larger file fails the pass. [Configuration](docs/configuration.md) has every command, the `--ext` rules and a one-time `docker run` form.
 
 ## Security
 
-The tool fails closed: non-age `.enc` content, stray ciphertext at a plaintext path, and symlink, hardlink, or otherwise nonregular sources all reject with a non-zero exit, and pathname resolution is confined to the mounted tree so a link cannot pull ciphertext in from outside it. The image runs as a non-root user on a distroless base (no shell, no package manager). Live scan results are on the repository's Security tab.
+The image opens no ports and runs as UID 65532 on a distroless base with no shell. Each decrypted file is written with mode 0600 and appears complete or not at all. A `.enc` file that is not age-encrypted, encrypted text at a plain file's name, and a link or other special file in place of a source all fail the pass. Lookups stay inside the folder you name, so a link cannot pull in a file from outside it.
 
-The image is published with [cosign](https://github.com/sigstore/cosign) signatures and SBOM attestations.
+docker-age runs several of its own passes at once safely. Make sure no other program renames or replaces files in the checkout while a pass runs, because docker-age does not defend against that. Deleting a `.env.enc` file leaves its `.env` on disk, so delete that file yourself when you retire a secret. [Security](docs/security.md) has a hardened compose example and what the image contains.
 
-A SIGINT or SIGTERM during a pass exits non-zero and never reports success, so the deploy is blocked. Publication is not transactional at the final step: a signal landing between the last cancellation check and the atomic rename (or the stdout write in `decrypt -`) can still publish that one file's plaintext before the non-zero exit. A file-mode output is always a complete derivation of its own source, never a partial write.
+## Troubleshooting
 
-## Dependencies
+The healthcheck shows only whether the waiting container is up and ready for `docker exec`. A failed decrypt leaves it healthy. The `docker exec` command reports a failure with a non-zero exit code instead, and that is what your deploy step must check.
 
-All dependencies are updated automatically via [Renovate](https://github.com/renovatebot/renovate) and pinned by digest or version for reproducibility.
+- `repo root unreadable` after your deploy tool syncs the repository. The tool replaced the checkout folder, so the container still sees the old one. Mount the parent folder at `/repo` and set `REPO_ROOT=/repo/<repo-name>`.
+- `stray age ciphertext at a plaintext path`. A file you encrypted still has its plain name. Rename it to `<name>.enc`.
+- `temp create error` with `permission denied`. The container's user cannot write to that folder. Repeat step 6 of the quick start.
+- `no matching files found under repo root`. Nothing matched. Check `REPO_ROOT`, the `/repo` mount and the `--ext` value.
 
-| Dependency | Source |
-| --- | --- |
-| golang (builder) | [Docker Hub](https://hub.docker.com/_/golang) |
-| distroless/static | [GoogleContainerTools](https://github.com/GoogleContainerTools/distroless) |
-| filippo.io/age | [GitHub](https://github.com/FiloSottile/age) |
+## Documentation
+
+- [Configuration](docs/configuration.md) has the identity file format, every command, the `--ext` rules, running once and running as another user.
+- [How docker-age works](docs/how-it-works.md) explains a decrypt pass, how files are written and the waiting container.
+- [Security](docs/security.md) has what docker-age refuses, the hardened compose example and what the image contains.
 
 ## Credits
 
-This project packages [age](https://github.com/FiloSottile/age) (the encryption library by [@FiloSottile](https://github.com/FiloSottile)) into a deploy-time decryption tool. All credit for the core encryption work goes to the upstream maintainers.
+docker-age decrypts with the [age](https://github.com/FiloSottile/age) Go library by [@FiloSottile](https://github.com/FiloSottile). All credit for the encryption goes to the age maintainers.
 
 ## Contributing
 
-Issues and pull requests are welcome. Please open an issue first for larger changes so the approach can be discussed before implementation.
+Issues and pull requests are welcome. Please open an issue first for larger changes, and see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Disclaimer
 
