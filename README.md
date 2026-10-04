@@ -92,7 +92,7 @@ The image opens no ports. The container runs these commands through `docker exec
 
 The image opens no ports and runs as UID 65532 on a distroless base with no shell. Each decrypted file is written with mode 0600 and appears complete or not at all. A `.enc` file that is not age-encrypted, encrypted text at a plain file's name, and a link or other special file in place of a source all fail the pass. Lookups stay inside the folder you name, so a link cannot pull in a file from outside it.
 
-docker-age runs several of its own passes at once safely. Make sure no other program renames or replaces files in the checkout while a pass runs, because docker-age does not defend against that. Deleting a `.env.enc` file leaves its `.env` on disk, so delete that file yourself when you retire a secret. [Security](docs/security.md) has a hardened compose example and what the image contains.
+docker-age runs several of its own passes at once safely. Make sure no other program renames or replaces files in the checkout while a pass runs, because docker-age does not defend against that. Deleting a `.env.enc` file leaves its `.env` on disk, so delete that file yourself when you retire a secret. [Security](docs/hardening.md) has a hardened compose example and what the image contains.
 
 ## Troubleshooting
 
@@ -107,7 +107,7 @@ The healthcheck shows only whether the waiting container is up and ready for `do
 
 - [Configuration](docs/configuration.md) has the identity file format, every command, the `--ext` rules, running once and running as another user.
 - [How docker-age works](docs/how-it-works.md) explains a decrypt pass, how files are written and the waiting container.
-- [Security](docs/security.md) has what docker-age refuses, the hardened compose example and what the image contains.
+- [Security](docs/hardening.md) has what docker-age refuses, the hardened compose example and what the image contains.
 
 ## Credits
 

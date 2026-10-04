@@ -1,4 +1,4 @@
-# Example compose for docker-age. See docs/configuration.md and docs/security.md for all configuration options and hardening.
+# Example compose for docker-age. See docs/configuration.md and docs/hardening.md for all configuration options and hardening.
 services:
   age:
     image: ghcr.io/cplieger/docker-age:latest
