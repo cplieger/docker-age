@@ -1,4 +1,4 @@
-module github.com/cplieger/docker-age/v3
+module github.com/cplieger/docker-age
 
 go 1.27.1
 
