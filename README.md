@@ -115,7 +115,7 @@ docker-age decrypts with the [age](https://github.com/FiloSottile/age) Go librar
 
 ## Contributing
 
-Issues and pull requests are welcome. Please open an issue first for larger changes, and see [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Disclaimer
 
