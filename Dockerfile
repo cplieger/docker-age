@@ -14,17 +14,12 @@ COPY scripts/collect-licenses.sh scripts/
 RUN sh scripts/collect-licenses.sh --name docker-age .
 
 # ---------------------------------------------------------------------------
-# Test stage — build-time smoke test against the freshly built binary. It
-# round-trips a known secret through age-decrypt (encrypt with the upstream
-# `age` CLI, decrypt with the built binary, assert the plaintext matches), so
-# the central `ci / validate` docker build gate fails if the build produced a
-# binary that cannot actually decrypt. The final stage depends on this stage's
-# /tests-passed marker, so BuildKit always builds it. `age` (an Alpine community
-# package, like keepalived's) is installed ONLY in this throwaway stage, never
-# in the distroless final image; age-decrypt is decrypt-only, so the fixture is
-# minted at build time rather than committed (no test key trips the secret scan).
-# No apk version pin: the digest-pinned builder base fixes the Alpine release
-# line, matching the fleet convention.
+# Test stage: round-trips a known secret through age-decrypt (encrypt with the
+# upstream `age` CLI, decrypt with the built binary), so the docker build gate
+# fails on a binary that cannot decrypt. The final stage depends on its
+# /tests-passed marker, so BuildKit always builds it. `age` is installed only
+# here; the fixture is minted at build time so no test key trips the secret
+# scan. No apk version pin: the digest-pinned builder base fixes the Alpine line.
 # ---------------------------------------------------------------------------
 FROM builder AS test
 RUN apk add --no-cache age
