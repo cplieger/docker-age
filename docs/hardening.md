@@ -8,10 +8,11 @@ docker-age fails closed. Each of these fails the pass with a non-zero exit, so t
 
 - A `.enc` file that is not age-encrypted, or that none of your identities can decrypt.
 - A source that is a link, a hard-linked file, a named pipe, a device or a folder. A source must be a plain file with one link.
-- Encrypted text at a plain file's name, and a link or other special file there, when `--ext` matches that name.
+- A link or other special file at a plain file's name, when `--ext` matches that name.
+- Encrypted text at a plain file's name, when `--ext` matches that name and no regular `<name>.enc` file sits beside it. With that file beside it, the result of decrypting `<name>.enc` decides instead.
 - A source path that is replaced by a different file while docker-age opens it.
 
-All file access goes through a handle on the folder being searched. A path cannot lead outside it, and a link cannot pull a file in from elsewhere. The identity file is opened read-only, and an identity that fails to parse is reported without its contents. Each plaintext is created with mode 0600, owned by the container's user, and checked again before it replaces the old file.
+docker-age reads each encrypted file, and writes, checks and replaces each plain file, through a handle on the folder being searched. A path cannot lead outside that folder, and a link cannot pull a file in from elsewhere. The identity file is opened read-only, and an identity that fails to parse is reported without its contents. Each plaintext is created with mode 0600, owned by the container's user, and checked again before it replaces the old file.
 
 ## What it leaves to you
 
@@ -23,18 +24,29 @@ The size limits are per file. A pass has no limit on the number of files, their 
 
 ## Hardened compose settings
 
-These settings add to the quick start's `compose.yaml`. [Hardening a compose file](https://github.com/cplieger/docs/blob/main/docs/hardening.md) explains each setting. The container writes only to the folders of the checkout and to `/tmp`, where the healthcheck file lives. The rest of its filesystem can be read-only. As UID 65532 it needs no Linux capability. If you run it as root with `user: "0:0"`, `cap_drop: ALL` also stops it writing to folders other users own, so run it as the checkout's owner instead or leave `cap_drop` out.
+These settings add to the quick start's `compose.yaml`. [Hardening a compose file](https://github.com/cplieger/docs/blob/main/docs/hardening.md) explains each setting. docker-age decrypts with all of them as its own user, UID 65532, with no Linux capability. It writes only to the folders of the checkout and to `/tmp`, where the healthcheck file lives. Without the `/tmp` line it still decrypts, but it logs `health marker directory not writable` and its healthcheck always reports healthy.
 
 ```yaml
 services:
   age:
     read_only: true
+    tmpfs:
+      - "/tmp:size=1m,mode=1777,noexec,nosuid,nodev"
     cap_drop:
       - ALL
     security_opt:
       - "no-new-privileges:true"
-    tmpfs:
-      - "/tmp:size=1m,mode=1777,noexec,nosuid,nodev"
+    user: "65532:65532"
+    mem_limit: 64m
+    pids_limit: 64
+```
+
+As root, with `user: "0:0"`, `cap_drop: ALL` also stops docker-age from reading a `keys.txt` owned by UID 65532 and from writing to folders another user owns. A decrypt then fails with `permission denied`. Add back `DAC_OVERRIDE`, the capability that lets root read and write files whatever their permissions, and keep the rest of the settings above:
+
+```yaml
+    user: "0:0"
+    cap_add:
+      - DAC_OVERRIDE
 ```
 
 ## What the image contains
