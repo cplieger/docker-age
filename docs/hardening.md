@@ -23,7 +23,7 @@ The size limits are per file. A pass has no limit on the number of files, their 
 
 ## Hardened compose settings
 
-These settings add to the quick start's `compose.yaml`. The container writes only to the folders of the checkout and to `/tmp`, where the healthcheck file lives. The rest of its filesystem can be read-only. As UID 65532 it needs no Linux capability. If you run it as root with `user: "0:0"`, `cap_drop: ALL` also stops it writing to folders other users own, so run it as the checkout's owner instead or leave `cap_drop` out.
+These settings add to the quick start's `compose.yaml`. [Hardening a compose file](https://github.com/cplieger/docs/blob/main/docs/hardening.md) explains each setting. The container writes only to the folders of the checkout and to `/tmp`, where the healthcheck file lives. The rest of its filesystem can be read-only. As UID 65532 it needs no Linux capability. If you run it as root with `user: "0:0"`, `cap_drop: ALL` also stops it writing to folders other users own, so run it as the checkout's owner instead or leave `cap_drop` out.
 
 ```yaml
 services:
@@ -47,4 +47,4 @@ The image holds one static Go binary, `/age-decrypt`, on a distroless base with 
 | Distroless static, nonroot | [Distroless](https://github.com/GoogleContainerTools/distroless) |
 | age library | [GitHub](https://github.com/FiloSottile/age) |
 
-[Renovate](https://github.com/renovatebot/renovate) keeps these up to date, pinned by digest or version. Each image is signed with [cosign](https://github.com/sigstore/cosign) and carries SBOM attestations. Live scan results are on the repository's Security tab.
+[Renovate](https://github.com/renovatebot/renovate) keeps these up to date, pinned by digest or version. Each image is signed with [cosign](https://github.com/sigstore/cosign) and carries SBOM attestations, which [Checking a signature](https://github.com/cplieger/docs/blob/main/docs/images.md#checking-a-signature) and [Reading the software bill of materials](https://github.com/cplieger/docs/blob/main/docs/images.md#reading-the-software-bill-of-materials) show how to check. Live scan results are on the repository's Security tab.
