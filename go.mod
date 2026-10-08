@@ -5,14 +5,14 @@ go 1.27.2
 require (
 	filippo.io/age v1.3.2
 	github.com/cplieger/envx/v2 v2.0.5
-	github.com/cplieger/health v1.8.1
-	github.com/cplieger/slogx v1.6.6
+	github.com/cplieger/health v1.8.2
+	github.com/cplieger/slogx v1.6.7
 	pgregory.net/rapid v1.3.0
 )
 
 require (
 	filippo.io/hpke v0.4.0 // indirect
-	github.com/cplieger/pathinside/v2 v2.0.2 // indirect
+	github.com/cplieger/pathinside/v2 v2.0.3 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 )
