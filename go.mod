@@ -4,9 +4,9 @@ go 1.27.3
 
 require (
 	filippo.io/age v1.3.2
-	github.com/cplieger/envx/v2 v2.1.0-dev.3
+	github.com/cplieger/envx/v2 v2.1.0
 	github.com/cplieger/health v1.10.0
-	github.com/cplieger/slogx v1.8.0-dev.1
+	github.com/cplieger/slogx v1.8.0
 	pgregory.net/rapid v1.3.0
 )
 
