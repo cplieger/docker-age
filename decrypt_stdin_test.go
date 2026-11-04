@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"filippo.io/age"
-	"github.com/cplieger/slogx/capture"
+	"github.com/cplieger/go/slogx/capture"
 )
 
 // TestDecryptStream exercises the extracted pipe core directly, reading from
