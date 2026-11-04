@@ -10,9 +10,9 @@ import (
 	"syscall"
 
 	"filippo.io/age"
-	"github.com/cplieger/envx/v2"
-	"github.com/cplieger/health"
-	"github.com/cplieger/slogx"
+	"github.com/cplieger/go/envx"
+	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/slogx"
 )
 
 func main() {

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"filippo.io/age"
-	"github.com/cplieger/slogx/capture"
+	"github.com/cplieger/go/slogx/capture"
 )
 
 // Tests for decryptAll, the directory-walk orchestration: per-outcome
