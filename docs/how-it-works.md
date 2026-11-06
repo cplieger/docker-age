@@ -35,7 +35,7 @@ Without a command, the container starts, marks itself healthy and waits. It does
 
 The waiting process needs `IDENTITY_PATH` set but never reads the identity file. A bad key therefore fails each `decrypt` command loudly while the container stays up, ready for the next try. A container that exited on a bad key would restart in a loop and leave nothing for the deploy step to reach.
 
-The healthcheck runs `/age-decrypt health` every 30 seconds, with a 5-second timeout, 3 retries and a 15-second start period. It reads `/tmp/.healthy`, which the waiting process writes when it starts and removes when it stops. The healthcheck says only whether that process is alive. A decrypt result never changes it.
+The healthcheck runs `/age-decrypt health` every 30 seconds, with a 5-second timeout, 3 retries and a 15-second start period. It reads `/tmp/.healthy`, which the waiting process writes when it starts and removes when it stops. The healthcheck says only whether that process is alive. A decrypt result never changes it. Docker's health status notifies nobody on its own.
 
 ## Stopping a pass
 

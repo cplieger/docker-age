@@ -86,7 +86,7 @@ The image opens no ports. The container runs these commands through `docker exec
 | `decrypt -` | Decrypts one file from standard input to standard output |
 | `health` | Runs the healthcheck |
 
-`decrypt` with nothing to decrypt is an error. Each encrypted file may be 10 MB at most and each decrypted file 1 MB, and a larger file fails the pass. [Configuration](docs/configuration.md) has every command, the `--ext` rules and a one-time `docker run` form.
+`decrypt` with no path and no `--ext` is an error. A pass that finds no matching file exits 0 with a warning. Each encrypted file may be 10 MB at most and each decrypted file 1 MB, and a larger file fails the pass. [Configuration](docs/configuration.md) has every command, the `--ext` rules and a one-time `docker run` form.
 
 ## Security
 
@@ -96,18 +96,19 @@ docker-age runs several of its own passes at once safely. Make sure no other pro
 
 ## Troubleshooting
 
-The healthcheck shows only whether the waiting container is up and ready for `docker exec`. A failed decrypt leaves it healthy. The `docker exec` command reports a failure with a non-zero exit code instead, and that is what your deploy step must check.
+The healthcheck shows only whether the waiting container is up and ready for `docker exec`. A failed decrypt leaves it healthy. The `docker exec` command reports a failure with a non-zero exit code instead, and that is what your deploy step must check. [Monitoring](docs/monitoring.md) lists the exit codes and where a pass writes its output.
 
 - `repo root unreadable` after your deploy tool syncs the repository. The tool replaced the checkout folder, so the container still sees the old one. Mount the parent folder at `/repo` and set `REPO_ROOT=/repo/<repo-name>`.
 - `stray age ciphertext at a plaintext path`. A file you encrypted still has its plain name. Rename it to `<name>.enc`.
 - `temp create error` with `permission denied`. The container's user cannot write to that folder. Repeat step 6 of the quick start.
-- `no matching files found under repo root`. Nothing matched. Check `REPO_ROOT`, the `/repo` mount and the `--ext` value.
+- `no matching files found under repo root`. Nothing matched, and the pass still exits 0, so your deploy step goes on. Check `REPO_ROOT`, the `/repo` mount and the `--ext` value.
 
 ## Documentation
 
 - [Configuration](docs/configuration.md) has the identity file format, every command, the `--ext` rules, running once and running as another user.
 - [How docker-age works](docs/how-it-works.md) explains a decrypt pass, how files are written and the waiting container.
 - [Security](docs/hardening.md) has what docker-age refuses, the hardened compose example and what the image contains.
+- [Monitoring](docs/monitoring.md) says what each exit code means and how to be told a pass failed.
 
 ## Credits
 
