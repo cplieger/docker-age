@@ -384,7 +384,7 @@ func TestLogDecryptResult_emits_all_counts(t *testing.T) {
 	if got := rec.CountLevel(slog.LevelError, "decryption failed"); got != 1 {
 		t.Errorf("CountLevel(ERROR, decryption failed) = %d, want 1", got)
 	}
-	for key, want := range map[string]string{
+	for key, want := range map[capture.AttrName]string{
 		"decrypted": "3", "failed": "2", "skipped": "5", "walk_errors": "1",
 	} {
 		if !rec.HasAttr("decryption failed", key, want) {
@@ -416,7 +416,7 @@ func TestRunDecrypt_partial_failure_logs_failed_not_complete(t *testing.T) {
 	if got := rec.CountLevel(slog.LevelError, "decryption failed"); got != 1 {
 		t.Errorf("CountLevel(ERROR, decryption failed) = %d, want 1 (messages=%v)", got, rec.Messages())
 	}
-	for key, want := range map[string]string{"decrypted": "1", "failed": "1"} {
+	for key, want := range map[capture.AttrName]string{"decrypted": "1", "failed": "1"} {
 		if !rec.HasAttr("decryption failed", key, want) {
 			got, ok := rec.AttrValue("decryption failed", key)
 			t.Errorf("summary %s = %q (found=%v), want %s", key, got, ok, want)
@@ -448,8 +448,8 @@ func TestWarnIfNoFilesSeen_warns_only_when_no_files_seen(t *testing.T) {
 		name     string
 		result   decryptResult
 		targets  []string
-		wantAttr string // the attr key distinguishing the repo-root vs named-target warning
-		wantVal  string // its rendered value (the repo root, or the fmt-rendered target list)
+		wantAttr capture.AttrName // the attr key distinguishing the repo-root vs named-target warning
+		wantVal  string           // its rendered value (the repo root, or the fmt-rendered target list)
 		wantWarn bool
 	}{
 		{name: "all zero, no targets, warns about repo root", result: decryptResult{}, targets: nil, wantWarn: true, wantAttr: "repo_root", wantVal: "/repo/app"},
