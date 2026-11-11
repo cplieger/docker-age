@@ -362,9 +362,48 @@ func TestRun_decryptMode(t *testing.T) {
 func TestRunServer_exits_zero_on_signal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	code := runServer(ctx)
+	code := runServer(ctx, filepath.Join(t.TempDir(), "docker-age.healthy"))
 	if code != 0 {
 		t.Errorf("runServer(canceled ctx) = %d, want 0", code)
+	}
+}
+
+// The image healthcheck runs `age-decrypt health` against this path, and the
+// hardened compose settings rely on /dev/shm staying writable under a
+// read-only root.
+func TestMarkerPath_is_under_dev_shm(t *testing.T) {
+	if want := "/dev/shm/docker-age.healthy"; markerPath != want {
+		t.Errorf("markerPath = %q, want %q", markerPath, want)
+	}
+}
+
+func TestRunServer_holds_marker_while_waiting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "docker-age.healthy")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	done := make(chan int, 1)
+	go func() { done <- runServer(ctx, path) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatalf("health file %s not written while runServer waits", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	if code := <-done; code != 0 {
+		t.Errorf("runServer = %d, want 0", code)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("health file after runServer returned: stat error = %v, want not exist", err)
 	}
 }
 

@@ -24,14 +24,12 @@ The size limits are per file. A pass has no limit on the number of files, their 
 
 ## Hardened compose settings
 
-These settings add to the quick start's `compose.yaml`. [Hardening a compose file](https://github.com/cplieger/docs/blob/main/docs/hardening.md) explains each setting. docker-age decrypts with all of them as its own user, UID 65532, with no Linux capability. It writes only to the folders of the checkout and to `/tmp`, where the healthcheck file lives. Without the `/tmp` line it still decrypts, but it logs `health marker directory not writable` and its healthcheck always reports healthy.
+These settings add to the quick start's `compose.yaml`. [Hardening a compose file](https://github.com/cplieger/docs/blob/main/docs/hardening.md) explains each setting. docker-age decrypts with all of them as its own user, UID 65532, with no Linux capability. With `read_only: true`, docker-age writes to two places. Each pass writes its plain files to the folders of the checkout. The waiting container writes its health file to `/dev/shm`, which stays writable under a read-only root, so no tmpfs is needed. A decrypt never depends on the health file.
 
 ```yaml
 services:
   age:
     read_only: true
-    tmpfs:
-      - "/tmp:size=1m,mode=1777,noexec,nosuid,nodev"
     cap_drop:
       - ALL
     security_opt:

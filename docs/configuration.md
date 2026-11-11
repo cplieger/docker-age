@@ -28,7 +28,7 @@ Run each one with `docker exec age /age-decrypt <command>`. A `decrypt` command 
 | `decrypt /path/to/dir` | Searches that folder and decrypts every `.enc` file in it, with no filter |
 | `decrypt -` | Reads encrypted text from standard input and writes the plaintext to standard output |
 | `decrypt` | Exits 1, because it names nothing to decrypt |
-| `health` | Checks the file at `/tmp/.healthy`. Exits 0 when it is there and 1 when it is not |
+| `health` | Checks the file at `/dev/shm/docker-age.healthy`. Exits 0 when it is there or that folder cannot be written, and 1 otherwise |
 
 You can name several paths in one command. Arguments after `--` are read as paths even when they start with `-`. `-` cannot be combined with other paths.
 
