@@ -11,14 +11,16 @@ import (
 
 	"filippo.io/age"
 	"github.com/cplieger/go/envx"
-	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/slogx"
 )
+
+var markerPath = health.MarkerPath("docker-age")
 
 func main() {
 	// CLI health probe for Docker healthcheck (distroless has no curl/wget).
 	if len(os.Args) > 1 && os.Args[1] == modeHealth {
-		health.RunProbe(health.DefaultPath) // always exits the process
+		health.RunProbe(markerPath) // always exits the process
 		return
 	}
 
@@ -57,19 +59,20 @@ func run(cfg *config) int {
 	// Server mode never loads the key: loading (and exiting on) it here would
 	// crash-loop the container under restart:unless-stopped and remove the
 	// exec target precisely when an operator needs it.
-	return runServer(ctx)
+	return runServer(ctx, markerPath)
 }
 
-// runServer idles as PID 1 with a healthy marker, waiting for SIGINT/SIGTERM.
-// All decrypt work happens via `docker exec` into this container.
-func runServer(ctx context.Context) int {
-	marker := health.NewMarker(health.DefaultPath)
-	defer marker.Cleanup()
-	marker.Set(true)
+// runServer idles as PID 1 with a healthy marker at marker, waiting for
+// SIGINT/SIGTERM, and removes the marker before it returns. All decrypt work
+// happens via `docker exec` into this container.
+func runServer(ctx context.Context, marker string) int {
+	st := health.NewStatus(health.WithMarker(marker))
+	st.Set(true)
 
 	slog.Info("ready, waiting for signals (decrypt via docker exec)")
 	<-ctx.Done()
 
+	st.BeginDrain()
 	slog.Info("shutting down", "cause", context.Cause(ctx))
 	return 0
 }
