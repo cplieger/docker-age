@@ -332,7 +332,7 @@ func (r *unblockableReadCloser) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
 
-func (r *unblockableReadCloser) Close() error { return nil }
+func (*unblockableReadCloser) Close() error { return nil }
 
 // blackholeWriteCloser discards writes; the paired read never completes in the
 // cancellation test below, so nothing is ever written to it.
