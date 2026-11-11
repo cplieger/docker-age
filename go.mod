@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	filippo.io/age v1.3.2
 	github.com/cplieger/go/envx v1.1.0
-	github.com/cplieger/go/health v1.1.0
+	github.com/cplieger/go/health/v2 v2.0.0
 	github.com/cplieger/go/slogx v1.1.0
 	pgregory.net/rapid v1.3.0
 )

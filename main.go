@@ -11,7 +11,7 @@ import (
 
 	"filippo.io/age"
 	"github.com/cplieger/go/envx"
-	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/slogx"
 )
 
