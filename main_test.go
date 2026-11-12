@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"filippo.io/age"
-	"github.com/cplieger/slogx/capture"
+	"github.com/cplieger/go/slogx/capture"
 )
 
 // --- decryptSingleFile ---
@@ -362,9 +362,48 @@ func TestRun_decryptMode(t *testing.T) {
 func TestRunServer_exits_zero_on_signal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	code := runServer(ctx)
+	code := runServer(ctx, filepath.Join(t.TempDir(), "docker-age.healthy"))
 	if code != 0 {
 		t.Errorf("runServer(canceled ctx) = %d, want 0", code)
+	}
+}
+
+// The image healthcheck runs `age-decrypt health` against this path, and the
+// hardened compose settings rely on /dev/shm staying writable under a
+// read-only root.
+func TestMarkerPath_is_under_dev_shm(t *testing.T) {
+	if want := "/dev/shm/docker-age.healthy"; markerPath != want {
+		t.Errorf("markerPath = %q, want %q", markerPath, want)
+	}
+}
+
+func TestRunServer_holds_marker_while_waiting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "docker-age.healthy")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	done := make(chan int, 1)
+	go func() { done <- runServer(ctx, path) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatalf("health file %s not written while runServer waits", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	if code := <-done; code != 0 {
+		t.Errorf("runServer = %d, want 0", code)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("health file after runServer returned: stat error = %v, want not exist", err)
 	}
 }
 
@@ -384,7 +423,7 @@ func TestLogDecryptResult_emits_all_counts(t *testing.T) {
 	if got := rec.CountLevel(slog.LevelError, "decryption failed"); got != 1 {
 		t.Errorf("CountLevel(ERROR, decryption failed) = %d, want 1", got)
 	}
-	for key, want := range map[string]string{
+	for key, want := range map[capture.AttrName]string{
 		"decrypted": "3", "failed": "2", "skipped": "5", "walk_errors": "1",
 	} {
 		if !rec.HasAttr("decryption failed", key, want) {
@@ -416,7 +455,7 @@ func TestRunDecrypt_partial_failure_logs_failed_not_complete(t *testing.T) {
 	if got := rec.CountLevel(slog.LevelError, "decryption failed"); got != 1 {
 		t.Errorf("CountLevel(ERROR, decryption failed) = %d, want 1 (messages=%v)", got, rec.Messages())
 	}
-	for key, want := range map[string]string{"decrypted": "1", "failed": "1"} {
+	for key, want := range map[capture.AttrName]string{"decrypted": "1", "failed": "1"} {
 		if !rec.HasAttr("decryption failed", key, want) {
 			got, ok := rec.AttrValue("decryption failed", key)
 			t.Errorf("summary %s = %q (found=%v), want %s", key, got, ok, want)
@@ -448,8 +487,8 @@ func TestWarnIfNoFilesSeen_warns_only_when_no_files_seen(t *testing.T) {
 		name     string
 		result   decryptResult
 		targets  []string
-		wantAttr string // the attr key distinguishing the repo-root vs named-target warning
-		wantVal  string // its rendered value (the repo root, or the fmt-rendered target list)
+		wantAttr capture.AttrName // the attr key distinguishing the repo-root vs named-target warning
+		wantVal  string           // its rendered value (the repo root, or the fmt-rendered target list)
 		wantWarn bool
 	}{
 		{name: "all zero, no targets, warns about repo root", result: decryptResult{}, targets: nil, wantWarn: true, wantAttr: "repo_root", wantVal: "/repo/app"},
