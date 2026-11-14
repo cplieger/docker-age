@@ -10,7 +10,8 @@ The identity file holds age identities made by `age-keygen`, with or without `-p
 
 - `permission denied`: the container's user cannot read the file.
 - `key file too large`: the file is over 1 MB.
-- `malformed identity`: a line is not an age identity, or the file holds none. The line is not shown, because it may hold a key.
+- `key file holds no age identity`: the file is empty, or holds only comments and blank lines.
+- `malformed identity`: a line is not an age identity. The line is not shown, because it may hold a key.
 
 `LOG_LEVEL` ignores case. An unknown value logs `invalid LOG_LEVEL, using default` and uses `info`. Logs go to standard error with UTC times, so `decrypt -` keeps standard output for the plaintext alone.
 

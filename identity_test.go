@@ -42,18 +42,10 @@ func TestLoadIdentityErrors(t *testing.T) {
 			t.Error("expected error")
 		}
 	})
-	t.Run("empty file", func(t *testing.T) {
-		p := filepath.Join(tmpDir, "empty.txt")
-		_ = os.WriteFile(p, []byte{}, 0o644)
-		if _, err := loadIdentities(p); err == nil {
-			t.Error("expected error")
-		}
-	})
-	t.Run("invalid content", func(t *testing.T) {
-		p := filepath.Join(tmpDir, "garbage.txt")
-		_ = os.WriteFile(p, []byte("not a valid age key"), 0o644)
-		if _, err := loadIdentities(p); err == nil {
-			t.Error("expected error")
+	t.Run("directory", func(t *testing.T) {
+		_, err := loadIdentities(tmpDir)
+		if err == nil || !strings.Contains(err.Error(), "read key file") {
+			t.Errorf("loadIdentities(dir) error = %v, want a read key file error", err)
 		}
 	})
 	t.Run("oversized file", func(t *testing.T) {
@@ -144,18 +136,43 @@ func TestLoadIdentity_multiple_identities_returns_all(t *testing.T) {
 	}
 }
 
-// A comment-and-whitespace-only key file must return an error, whether age
-// treats it as "no identities" or as a parse error.
-func TestLoadIdentity_file_with_only_comments_returns_error(t *testing.T) {
-	tmpDir := t.TempDir()
-	keyPath := filepath.Join(tmpDir, "comments-only.txt")
-	content := "# only a comment\n# another comment\n\n"
-	if err := os.WriteFile(keyPath, []byte(content), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
+// An empty or comments-only key file is reported as holding no identity, and any
+// other parse failure as malformed without the line, which may hold a key.
+func TestLoadIdentity_content_table(t *testing.T) {
+	identity := newIdentity(t)
+	const badLine = "AGE-SECRET-KEY-1NOTAVALIDKEYLINE"
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{name: "empty file", content: "", wantErr: "key file holds no age identity"},
+		{name: "comments and blank lines only", content: "# created: 2024-01-01T00:00:00Z\n\n  \r\n# public key: age1x\n", wantErr: "key file holds no age identity"},
+		{name: "malformed line", content: "# comment\n" + badLine + "\n", wantErr: "malformed identity"},
+		{name: "valid key", content: "# comment\n" + identity.String() + "\n"},
 	}
-
-	_, err := loadIdentities(keyPath)
-	if err == nil {
-		t.Fatal("loadIdentities(comments-only) = nil, want error")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyPath := filepath.Join(t.TempDir(), "keys.txt")
+			if err := os.WriteFile(keyPath, []byte(tt.content), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			ids, err := loadIdentities(keyPath)
+			if tt.wantErr == "" {
+				if err != nil || len(ids) != 1 {
+					t.Fatalf("loadIdentities = %d identities, %v; want 1, nil", len(ids), err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("loadIdentities = %d identities, nil; want error %q", len(ids), tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("loadIdentities error = %q, want it to contain %q", err, tt.wantErr)
+			}
+			if strings.Contains(err.Error(), badLine) {
+				t.Errorf("loadIdentities error %q echoes the key line", err)
+			}
+		})
 	}
 }
