@@ -28,7 +28,7 @@ docker-age is free software under the Apache-2.0 license.
 
 ## Quick start
 
-The image is on GitHub Container Registry and Docker Hub, for `amd64` and `arm64`. To pin a version, use a release tag such as `v4.3.1` or `v4` in place of `latest`. This is the [`compose.yaml`](compose.yaml) in this repository. The container stays running between deploys, and your deploy step runs one `docker exec` command against it to decrypt. [Configuration](docs/configuration.md#running-once) also shows how to run one pass in a container that then exits.
+The image is on GitHub Container Registry and on Docker Hub as `cplieger/docker-age`, for `amd64` and `arm64`. To pin a version, use a release tag such as `v4.3.1` or `v4` in place of `latest`. This is the [`compose.yaml`](compose.yaml) in this repository. The container stays running between deploys, and your deploy step runs one `docker exec` command against it to decrypt. [Configuration](docs/configuration.md#running-once) also shows how to run one pass in a container that then exits.
 
 ```yaml
 services:
