@@ -6,12 +6,11 @@ This page lists every `decrypt` command and the rules `--ext` follows, and shows
 
 The three settings are in the README's [configuration reference](../README.md#configuration-reference). `IDENTITY_PATH` is read when the container starts, and the container exits with `invalid configuration` when it is unset. The identity file itself is read only when a `decrypt` command runs, so a missing or unreadable `keys.txt` shows up then, as `failed to load identities`.
 
-The identity file holds age identities made by `age-keygen`, one per line, and lines starting with `#` are ignored. SSH keys and a passphrase-protected identity file are not read. The `failed to load identities` line names the cause:
+The identity file holds age identities made by `age-keygen`, with or without `-pq`, one per line, and lines starting with `#` are ignored. SSH keys, plugin identities such as one for a YubiKey, and a passphrase-protected identity file are not read. A file encrypted with a passphrase, using `age -p`, cannot be decrypted, so encrypt each file to your recipients. The `failed to load identities` line names the cause:
 
 - `permission denied`: the container's user cannot read the file.
 - `key file too large`: the file is over 1 MB.
-- `malformed identity`: a line is not an age identity. The line is not shown, because it may hold a key.
-- `no identities found`: the file holds no identity.
+- `malformed identity`: a line is not an age identity, or the file holds none. The line is not shown, because it may hold a key.
 
 `LOG_LEVEL` ignores case. An unknown value logs `invalid LOG_LEVEL, using default` and uses `info`. Logs go to standard error with UTC times, so `decrypt -` keeps standard output for the plaintext alone.
 
