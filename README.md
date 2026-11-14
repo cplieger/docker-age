@@ -10,8 +10,8 @@ docker-age decrypts the [age](https://github.com/FiloSottile/age)-encrypted `.en
 docker-age lets you commit every secret encrypted and still start each stack with a plain `.env` file:
 
 - Writes `apps/x/.env` next to each `apps/x/.env.enc` and never changes the encrypted file, so `git pull` stays clean.
-- Fails when a file will not decrypt or encrypted text sits at a plain file's name, so your deploy can stop.
-- Tries every key in your identity file, so you rotate a key by adding the new one beside the old.
+- Returns an error when a file will not decrypt or a `.env` still holds encrypted text, so your deploy can stop.
+- Tries every key in your identity file, so files encrypted to an old key decrypt until you remove it.
 - Also decrypts any other file named `<name>.enc`, or one file you pipe through it.
 
 ## Who it is for
@@ -28,7 +28,7 @@ docker-age is free software under the Apache-2.0 license.
 
 ## Quick start
 
-The image is on GitHub Container Registry and Docker Hub, for `amd64` and `arm64`. This is the [`compose.yaml`](compose.yaml) in this repository. The container stays running between deploys, and your deploy step runs one `docker exec` command against it to decrypt. [Configuration](docs/configuration.md#running-once) also has a one-time `docker run` form.
+The image is on GitHub Container Registry and Docker Hub, for `amd64` and `arm64`. To pin a version, use a release tag such as `v4.3.1` or `v4` in place of `latest`. This is the [`compose.yaml`](compose.yaml) in this repository. The container stays running between deploys, and your deploy step runs one `docker exec` command against it to decrypt. [Configuration](docs/configuration.md#running-once) also shows how to run one pass in a container that then exits.
 
 ```yaml
 services:
@@ -86,19 +86,19 @@ The image opens no ports. The container runs these commands through `docker exec
 | `decrypt -` | Decrypts one file from standard input to standard output |
 | `health` | Runs the healthcheck |
 
-`decrypt` with no path and no `--ext` is an error. A pass that finds no matching file exits 0 with a warning. Each encrypted file may be 10 MB at most and each decrypted file 1 MB, and a larger file fails the pass. [Configuration](docs/configuration.md) has every command, the `--ext` rules and a one-time `docker run` form.
+`decrypt` with no path and no `--ext` is an error. When a pass finds no file to decrypt, it logs a warning and exits 0. A pass fails on an encrypted file over 10 MB or a decrypted file over 1 MB. [Configuration](docs/configuration.md) has every command, the `--ext` rules and a one-time `docker run` form.
 
 ## Security
 
-The image opens no ports and runs as UID 65532 on a distroless base with no shell. Each decrypted file is written with mode 0600 and appears complete or not at all. A `.enc` file that is not age-encrypted, encrypted text at a plain file's name, and a link or other special file in place of a source all fail the pass. Lookups stay inside the folder you name, so a link cannot pull in a file from outside it.
+The image opens no ports and runs as UID 65532 on a distroless base with no shell. Each decrypted file is written with mode 0600 and appears complete or not at all. A `.enc` file that is not age-encrypted fails the pass, and so does a file such as `.env` that holds encrypted text. A link or other special file in place of a source fails it too. Lookups stay inside the folder you name, so a link cannot pull in an outside file.
 
-docker-age runs several of its own passes at once safely. Make sure no other program renames or replaces files in the checkout while a pass runs, because docker-age does not defend against that. Deleting a `.env.enc` file leaves its `.env` on disk, so delete that file yourself when you retire a secret. [Security](docs/hardening.md) has a hardened compose example and what the image contains.
+Several passes can safely run on one checkout at once. A pass expects no other program to rename or replace files in the checkout while it runs. Give no untrusted program write access to it. Deleting a `.env.enc` file leaves its `.env` on disk, so delete that file yourself when you retire a secret. [Security](docs/hardening.md) has a hardened compose example and what the image contains.
 
 ## Troubleshooting
 
-The healthcheck shows only whether the waiting container is up and ready for `docker exec`. A failed decrypt leaves it healthy. The `docker exec` command reports a failure with a non-zero exit code instead, and that is what your deploy step must check. [Monitoring](docs/monitoring.md) lists the exit codes and where a pass writes its output.
+The healthcheck reports only that the waiting container is running and ready for `docker exec`. It stays healthy after a failed decrypt. The `docker exec` command reports a failure with a non-zero exit code instead, and that is what your deploy step must check. [Monitoring](docs/monitoring.md) lists the exit codes and where a pass writes its output.
 
-- `repo root unreadable` after your deploy tool syncs the repository. The tool replaced the checkout folder, so the container still sees the old one. Mount the parent folder at `/repo` and set `REPO_ROOT=/repo/<repo-name>`.
+- `repo root unreadable` after your deploy tool syncs the repository. The tool deleted the checkout folder and cloned it again, and the container still has the deleted folder mounted. Mount the parent folder at `/repo` and set `REPO_ROOT=/repo/<repo-name>`.
 - `stray age ciphertext at a plaintext path`. A file you encrypted still has its plain name. Rename it to `<name>.enc`.
 - `temp create error` with `permission denied`. The container's user cannot write to that folder. Repeat step 6 of the quick start.
 - `no matching files found under repo root`. Nothing matched, and the pass still exits 0, so your deploy step goes on. Check `REPO_ROOT`, the `/repo` mount and the `--ext` value.
