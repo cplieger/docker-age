@@ -3,20 +3,21 @@
 [![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/size.json)](https://github.com/cplieger/docker-age/pkgs/container/docker-age) [![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)](https://github.com/cplieger/docker-age/pkgs/container/docker-age) [![base: distroless static](https://img.shields.io/badge/base-distroless%2Fstatic-2496ED?logo=docker)](https://github.com/cplieger/docker-age/blob/main/Dockerfile) [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-age/badges/mutation.json)](https://github.com/cplieger/docker-age/issues?q=label%3Agremlins-tracker) [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/docker-age/releases)
 
 <!-- hub-overview BEGIN -->
-docker-age decrypts the [age](https://github.com/FiloSottile/age)-encrypted `.env` files in a git checkout on your server, right before your Docker Compose stacks start. Your secrets stay encrypted in git. It does not encrypt files or start your stacks.
+docker-age makes [age](https://github.com/FiloSottile/age) decryption part of your Docker Compose deploy: one command decrypts every age-encrypted `.env` file in your git checkout, right before your stacks start, and fails the deploy when one will not decrypt. Your secrets stay encrypted in git. It does not encrypt files or start your stacks.
 
 ## What it does
 
 docker-age lets you commit every secret encrypted and still start each stack with a plain `.env` file:
 
 - Writes `apps/x/.env` next to each `apps/x/.env.enc` and never changes the encrypted file, so `git pull` stays clean.
+- Writes each `.env` readable by its owner only, and replaces it whole, so a stack never reads a half-written file.
 - Returns an error when a file will not decrypt or a `.env` still holds encrypted text, so your deploy can stop.
 - Tries every key in your identity file, so files encrypted to an old key decrypt until you remove it.
 - Also decrypts any other file named `<name>.enc`, or one file you pipe through it.
 
 ## Who it is for
 
-docker-age is built for Docker Compose stacks deployed from a git checkout, with each secret committed as an age-encrypted file. You need the age command-line tool to encrypt your files and an identity file from `age-keygen` on each server. Your deploy step must run `docker exec` before your stacks start.
+docker-age is built for Docker Compose stacks deployed from a git checkout, with each secret committed as an age-encrypted file. You need the age command-line tool to encrypt your files and an identity file from `age-keygen` on each server. Your deploy step must run `docker exec` before your stacks start. To decrypt one file by hand, the `age` command is all you need. docker-age is for decrypting every file on every deploy, from a small distroless image with no shell.
 
 Two other projects suit a different setup:
 
