@@ -11,7 +11,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/cplieger/go/envx"
+	"github.com/cplieger/go/envx/v2"
 )
 
 type config struct {
